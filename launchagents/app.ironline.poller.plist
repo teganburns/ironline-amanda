@@ -20,6 +20,8 @@
         <string>YOUR_OPENAI_API_KEY_HERE</string>
         <key>MCP_URL</key>
         <string>http://localhost:3000/imessage/mcp</string>
+        <key>CONTEXT_MCP_URL</key>
+        <string>http://localhost:3001/context/mcp</string>
     </dict>
 
     <key>WorkingDirectory</key>

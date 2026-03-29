@@ -10,9 +10,9 @@ import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getMessages } from "./db.js";
-import { sendText } from "./applescript.js";
 
 const MCP_URL = process.env.MCP_URL ?? "http://localhost:3000/imessage/mcp";
+const CONTEXT_MCP_URL = process.env.CONTEXT_MCP_URL ?? "http://localhost:3001/context/mcp";
 const AUTH_TOKEN = process.env.AUTH_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY_AMANDA_IRONLINE_AGENT ?? process.env.OPENAI_API_KEY;
 
@@ -59,14 +59,21 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
     requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } },
   });
 
+  const contextMcpServer = new MCPServerStreamableHttp({
+    name: "context",
+    url: CONTEXT_MCP_URL,
+    requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } },
+  });
+
   try {
     await mcpServer.connect();
+    await contextMcpServer.connect();
 
     const agent = new Agent({
       name: "Amanda",
       model: "gpt-5.4-nano",
       instructions: buildInstructions(),
-      mcpServers: [mcpServer],
+      mcpServers: [mcpServer, contextMcpServer],
     });
 
     const result = await run(agent, agentInput);
@@ -78,20 +85,17 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
     }
     console.log(`[agent] completed — ${result.finalOutput ?? "(no text output)"}`);
 
-    // Fallback: if the agent produced text but didn't call send_message,
-    // send it automatically. The model sometimes outputs the reply as text
-    // instead of invoking the tool.
     const sentMessage = toolCalls.some((t) =>
       ["send_message", "send_image", "send_file"].includes(t)
     );
-    if (!sentMessage && result.finalOutput) {
-      console.log(`[agent] fallback send — agent produced text without calling send_message`);
-      await sendText(payload.sender, result.finalOutput, payload.service);
+    if (!sentMessage) {
+      console.warn(`[agent] warning — completed without calling send_message`);
     }
   } catch (e: any) {
     console.error(`[agent] error: ${e?.message ?? String(e)}`);
   } finally {
     await mcpServer.close().catch(() => {});
+    await contextMcpServer.close().catch(() => {});
   }
 }
 
@@ -192,7 +196,10 @@ When you receive a message you follow this pipeline:
 CRITICAL: You are not a chat interface. Outputting text does nothing — the sender will never see it. Your ONLY way to communicate with a sender is by calling send_message (or send_image/send_file). Every conversation must end with a tool call to send a reply, or a deliberate decision not to respond (with a reason logged as your final text output).
 
 Guidelines:
-- Be concise and direct in responses. You are operating on behalf of Ironline, not having casual conversation.
+- Reply like a human would over text. Most replies should be one sentence. "Sure, what's the question?" is a complete, correct response to "Hey, quick question." Do not anticipate, list options, or explain your capabilities unless directly asked.
+- Never use bullet points, numbered lists, headers, or em dashes (—) in replies.
+- Match the sender's emotional tone. If they express excitement, happiness, or enthusiasm, reflect that back with an emoji or matching energy — don't respond flatly to emotional messages. "I'm so excited!" deserves "That's awesome! 🎉" not a dry follow-up question.
+- Do not add context, caveats, or follow-up offers to a reply unless the sender's message actually calls for it.
 - When in doubt, ask a clarifying question rather than guessing.
 - Never take irreversible actions (sending files, making commitments) without sufficient context.
 - If a request is outside your current capabilities, say so clearly and suggest next steps.
@@ -208,12 +215,18 @@ Privacy and data isolation (strict):
 - When using list_chats, do not relay the names or details of other conversations to the sender.
 
 Memory:
-- At the start of every conversation, call read_memory with the sender's phone number or email to load any notes about them.
-- After any interaction where you learn something worth remembering (who someone is, their role, preferences, open tasks, decisions made), call write_memory to save it.
+- At the start of every conversation, call memory_get with the sender's phone number or email to load any notes about them.
+- After any interaction where you learn something worth remembering (who someone is, their role, preferences, open tasks, decisions made), call memory_store to save it.
 - Use the sender's phone number or email as the key for contact notes (e.g. +13128344710).
 - Use topic slugs for non-contact memory (e.g. "open-tasks", "pricing", "team").
 - Memory is markdown — write it clearly so future-you can read it quickly.
 - Never read another sender's memory key on behalf of the current sender.
+
+Vector memory (memory_store / memory_search / memory_get / memory_delete):
+- Use memory_store to save anything richer than a flat note — contact summaries, conversation highlights, preferences with context.
+- Use memory_search when you need to find relevant memories by meaning (e.g. "what do I know about their business?") rather than by exact key.
+- Use memory_get for exact key lookup when you already know the key.
+- Prefer vector memory over flat-file memory (read_memory/write_memory) for new writes — flat-file memory is legacy.
   `.trim();
 
   if (!IRONLINE_CONTEXT) return core;

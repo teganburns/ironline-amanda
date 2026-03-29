@@ -1,5 +1,4 @@
 import { exec } from "node:child_process";
-import { extname, basename } from "node:path";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
@@ -50,92 +49,6 @@ export async function checkMessagesRunning(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-// ── Send text ────────────────────────────────────────────────────────────────
-
-export async function sendText(
-  recipient: string,
-  text: string,
-  service: string = "iMessage"
-): Promise<void> {
-  const r = escapeAS(recipient);
-  const t = escapeAS(text);
-  const svcType = service === "SMS" ? "SMS" : "iMessage";
-  await execAppleScript(`
-tell application "Messages"
-  set targetService to 1st service whose service type = ${svcType}
-  set targetBuddy to buddy "${r}" of targetService
-  send "${t}" to targetBuddy
-end tell
-  `.trim());
-}
-
-// ── Send file (+ optional caption) ──────────────────────────────────────────
-
-function needsSandboxBypass(filePath: string): boolean {
-  return !/(Pictures|Downloads|Documents)/.test(filePath);
-}
-
-function buildTempTemplate(filePath: string): string {
-  const ext = extname(filePath);
-  const safeExt = ext.replace(/[^a-zA-Z0-9.]/g, "");
-  const base = basename(filePath, ext)
-    .replace(/[^a-zA-Z0-9._-]/g, "_")
-    .replace(/X/g, "_")
-    .slice(0, 60);
-  const basePart = base ? `${base}_` : "";
-  return `imsg_temp_${basePart}XXXXXXXXXX${safeExt}`;
-}
-
-function fileDelay(filePath: string): number {
-  try {
-    const fs = require("node:fs");
-    const mb = fs.statSync(filePath).size / 1_048_576;
-    return mb < 1 ? 2 : mb < 10 ? 3 : 5;
-  } catch {
-    return 3;
-  }
-}
-
-export async function sendFile(
-  recipient: string,
-  filePath: string,
-  caption?: string,
-  service: string = "iMessage"
-): Promise<void> {
-  const r = escapeAS(recipient);
-  const p = escapeAS(filePath);
-  const svcType = service === "SMS" ? "SMS" : "iMessage";
-  const delay = fileDelay(filePath);
-
-  let attachScript: string;
-  if (needsSandboxBypass(filePath)) {
-    const tmpl = escapeAS(buildTempTemplate(filePath));
-    attachScript = `
-  set picturesFolder to POSIX path of (path to pictures folder)
-  set targetPath to do shell script "mktemp " & quoted form of (picturesFolder & "${tmpl}")
-  do shell script "cat " & quoted form of "${p}" & " > " & quoted form of targetPath & " && chmod 600 " & quoted form of targetPath & " || { rm -f " & quoted form of targetPath & "; exit 1; }"
-  set theFile to (POSIX file targetPath) as alias
-  send theFile to targetBuddy
-  delay ${delay}`.trim();
-  } else {
-    attachScript = `
-  send POSIX file "${p}" to targetBuddy
-  delay ${delay}`.trim();
-  }
-
-  const captionScript = caption
-    ? `  send "${escapeAS(caption)}" to targetBuddy\n`
-    : "";
-
-  await execAppleScript(`
-tell application "Messages"
-  set targetService to 1st service whose service type = ${svcType}
-  set targetBuddy to buddy "${r}" of targetService
-${captionScript}  ${attachScript}
-end tell
-  `.trim());
 }
 
 // ── Mark chat as read ────────────────────────────────────────────────────────
