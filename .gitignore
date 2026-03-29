@@ -1,0 +1,9 @@
+node_modules
+dist
+out
+.env
+*.local
+.DS_Store
+.cache
+*.tsbuildinfo
+~/Library/LaunchAgents/app.ironline.*.plist

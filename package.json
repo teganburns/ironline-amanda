@@ -1,0 +1,14 @@
+{
+  "name": "ironline-amanda",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun poller.ts",
+    "dev": "bun --watch poller.ts"
+  },
+  "dependencies": {
+    "@openai/agents": "^0.8.1",
+    "node-typedstream": "^1.4.1"
+  }
+}

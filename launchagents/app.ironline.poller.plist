@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>app.ironline.poller</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/amanda/.bun/bin/bun</string>
+        <string>--watch</string>
+        <string>/Users/amanda/Development/git/ironline-amanda/poller.ts</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>AUTH_TOKEN</key>
+        <string>8446cad350994957fe406d058899dd1999d0a8597df38fc89181deaf321341bb</string>
+        <key>OPENAI_API_KEY_AMANDA_IRONLINE_AGENT</key>
+        <string>YOUR_OPENAI_API_KEY_HERE</string>
+        <key>MCP_URL</key>
+        <string>http://localhost:3000/imessage/mcp</string>
+    </dict>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/amanda/Development/git/ironline-amanda</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/amanda/Library/Logs/ironline/poller.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/amanda/Library/Logs/ironline/poller.error.log</string>
+</dict>
+</plist>
