@@ -25,7 +25,12 @@ const POLL_WINDOW_MS = POLL_INTERVAL_MS * 2;
 
 function resolveMessageType(msg: ReturnType<typeof getMessages>[number]): MessageType {
   if (msg.isReaction) return "reaction";
-  if (msg.attachments.length === 0) return "text";
+  if (msg.attachments.length === 0) {
+    // U+FFFC (object replacement character) in text means an attachment was sent
+    // but hasn't been linked in chat.db yet — treat as image so the agent retries.
+    if (msg.text?.includes("\uFFFC")) return "image";
+    return "text";
+  }
   const mime = msg.attachments[0].mimeType;
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
