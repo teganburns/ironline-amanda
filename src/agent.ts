@@ -13,6 +13,7 @@
  */
 
 import { Agent, run, MCPServerStreamableHttp, setDefaultOpenAIKey } from "@openai/agents";
+import Langfuse from "langfuse";
 import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -33,6 +34,12 @@ if (!AUTH_TOKEN) throw new Error("AUTH_TOKEN env var is required");
 if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY_AMANDA_IRONLINE_AGENT env var is required");
 
 setDefaultOpenAIKey(OPENAI_API_KEY);
+
+const langfuse = new Langfuse({
+  secretKey: process.env.LANGFUSE_SECRET_KEY,
+  publicKey:  process.env.LANGFUSE_PUBLIC_KEY,
+  baseUrl:    process.env.LANGFUSE_BASE_URL,
+});
 
 // Load Ironline context facts — edit context.md to update what Amanda knows
 const CONTEXT_PATH = join(import.meta.dir, "..", "context.md");
@@ -67,6 +74,14 @@ interface ClassificationResult {
 
 
 export async function callAgent(payload: MessagePayload): Promise<void> {
+  const trace = langfuse.trace({
+    name:     "amanda-message",
+    userId:   payload.sender,
+    input:    { message: payload.text, message_type: payload.message_type },
+    metadata: { chat_id: payload.chat_id, sender_name: payload.sender_name },
+    tags:     ["imessage"],
+  });
+
   // history is DESC ordered — history[0] is the triggering message.
   // For image messages, attachments may not be linked in chat.db immediately —
   // retry once after a short delay.
@@ -104,8 +119,9 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
     await contextMcpServer.connect();
 
     // ── Triage ────────────────────────────────────────────────────────────────
-    const classification = await classifyMessage(payload, history);
+    const classification = await classifyMessage(payload, history, trace);
     console.log(`[agent] tier: ${classification.tier}`);
+    trace.update({ metadata: { chat_id: payload.chat_id, sender_name: payload.sender_name, tier: classification.tier } });
 
     if (classification.tier === "no_reply") {
       console.log("[agent] no reply needed — exiting");
@@ -114,6 +130,7 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
 
     // Send holding reply immediately for slow tiers before heavy processing
     if (classification.holding_reply) {
+      const holdSpan = trace.span({ name: "holding-reply", input: { text: classification.holding_reply } });
       try {
         const holdResult = await (mcpServer as any).callTool("send_message", {
           recipient: payload.sender,
@@ -122,11 +139,14 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
         });
         if (holdResult?.isError) {
           console.error(`[agent] holding reply failed: ${holdResult.content?.[0]?.text ?? JSON.stringify(holdResult)}`);
+          holdSpan.end({ output: { status: "error" } });
         } else {
           console.log(`[agent] holding reply sent: "${classification.holding_reply}"`);
+          holdSpan.end({ output: { status: "sent" } });
         }
       } catch (e: any) {
         console.error(`[agent] holding reply callTool threw: ${e?.message ?? String(e)}`);
+        holdSpan.end({ output: { status: "error", error: String(e) } });
       }
     }
 
@@ -153,7 +173,7 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
         }
 
         try {
-          const description = await describeImage(filePath, att.mimeType);
+          const description = await describeImage(filePath, att.mimeType, trace);
           imageDescriptions.push(description);
           console.log(`[agent] described image: ${att.filename}`);
 
@@ -197,10 +217,22 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
       mcpServers: [mcpServer, contextMcpServer],
     });
 
+    const agentSpan = trace.span({
+      name:     "agent-run",
+      input:    { model, maxTurns, tier: classification.tier },
+      metadata: { tier: classification.tier },
+    });
     const result = await run(agent, text, { maxTurns });
     const toolCalls = result.newItems
       .filter((i: any) => i.type === "tool_call_item")
       .map((i: any) => i.rawItem?.name ?? "unknown");
+
+    for (const toolName of toolCalls) {
+      const toolSpan = agentSpan.span({ name: `tool-call:${toolName}` });
+      toolSpan.end();
+    }
+    agentSpan.end({ output: { finalOutput: result.finalOutput, toolCalls } });
+
     if (toolCalls.length > 0) {
       console.log(`[agent] tool calls: ${toolCalls.join(", ")}`);
     }
@@ -214,9 +246,12 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
     }
   } catch (e: any) {
     console.error(`[agent] error: ${e?.message ?? String(e)}`);
+    trace.update({ output: { error: String(e) } });
   } finally {
     await mcpServer.close().catch(() => {});
     await contextMcpServer.close().catch(() => {});
+    await langfuse.flushAsync();
+    console.log(`[agent] langfuse flushed — trace: ${trace.id}`);
   }
 }
 
@@ -242,7 +277,8 @@ Holding reply guidelines: short, conversational, context-aware. Examples: "Got i
 
 async function classifyMessage(
   payload: MessagePayload,
-  history: ReturnType<typeof getMessages>
+  history: ReturnType<typeof getMessages>,
+  trace: ReturnType<typeof langfuse.trace>
 ): Promise<ClassificationResult> {
   // Images are always routed to the image pipeline — no need to ask nano.
   if (payload.message_type === "image") {
@@ -273,6 +309,18 @@ async function classifyMessage(
       `Incoming message (type: ${payload.message_type}): ${currentMsg}`,
     ].filter(Boolean).join("\n\n");
 
+    const triageMessages = [
+      { role: "system", content: TRIAGE_SYSTEM_PROMPT },
+      { role: "user", content: userContent },
+    ];
+
+    const gen = trace.generation({
+      name:  "triage",
+      model: TRIAGE_MODEL,
+      input: triageMessages,
+      metadata: { message_type: payload.message_type },
+    });
+
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -281,22 +329,30 @@ async function classifyMessage(
       },
       body: JSON.stringify({
         model: TRIAGE_MODEL,
-        messages: [
-          { role: "system", content: TRIAGE_SYSTEM_PROMPT },
-          { role: "user", content: userContent },
-        ],
+        messages: triageMessages,
         max_tokens: 100,
         temperature: 0,
       }),
     });
 
     if (!response.ok) {
+      gen.end({ output: { error: `HTTP ${response.status}` } });
       throw new Error(`Triage API error ${response.status}`);
     }
 
     const json = (await response.json()) as any;
     const raw = json.choices?.[0]?.message?.content ?? "{}";
     const parsed = JSON.parse(raw) as { tier?: string; holding_reply?: string };
+    const usage = json.usage;
+
+    gen.end({
+      output: parsed,
+      usage: {
+        promptTokens:     usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens:      usage?.total_tokens,
+      },
+    });
 
     const validTiers: MessageTier[] = [
       "no_reply", "banter", "question", "reasoning", "complex", "correction", "image",
@@ -333,10 +389,21 @@ function getModelConfig(tier: MessageTier): { model: string; maxTurns: number } 
  * Describe an image using IMAGE_MODEL (gpt-5.4-pro).
  * Converts HEIC/HEIF to JPEG first since OpenAI doesn't accept them.
  */
-async function describeImage(filePath: string, mimeType: string): Promise<string> {
+async function describeImage(
+  filePath: string,
+  mimeType: string,
+  trace: ReturnType<typeof langfuse.trace>
+): Promise<string> {
   let readPath = filePath;
   let actualMime = mimeType;
   let tmpDir: string | null = null;
+
+  const gen = trace.generation({
+    name:  "image-description",
+    model: IMAGE_MODEL,
+    input: { filePath, mimeType },
+    metadata: { converted: mimeType === "image/heic" || mimeType === "image/heif" },
+  });
 
   try {
     if (mimeType === "image/heic" || mimeType === "image/heif") {
@@ -384,11 +451,24 @@ async function describeImage(filePath: string, mimeType: string): Promise<string
 
     if (!response.ok) {
       const body = await response.text();
+      gen.end({ output: { error: `HTTP ${response.status}` } });
       throw new Error(`OpenAI vision error ${response.status}: ${body}`);
     }
 
     const json = (await response.json()) as any;
-    return json.choices?.[0]?.message?.content ?? "Image could not be described.";
+    const description = json.choices?.[0]?.message?.content ?? "Image could not be described.";
+    const usage = json.usage;
+
+    gen.end({
+      output: { description },
+      usage: {
+        promptTokens:     usage?.prompt_tokens,
+        completionTokens: usage?.completion_tokens,
+        totalTokens:      usage?.total_tokens,
+      },
+    });
+
+    return description;
   } finally {
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -410,20 +490,20 @@ function formatInput(
     `Service: ${payload.service}`,
     `Type: ${payload.message_type}`,
     `Chat ID: ${payload.chat_id}`,
-    `Current time: ${payload.timestamp}`,
+    `Current time (Unix epoch ms): ${Date.now()}`,
   ];
 
   if (history.length > 0) {
     lines.push("", "--- Conversation history (oldest → newest) ---");
     for (const msg of history) {
       const speaker = msg.isFromMe ? "Amanda" : (payload.sender_name ?? payload.sender);
-      const time = new Date(msg.date).toISOString();
+      const time = new Date(msg.date).getTime();
       const att = msg.attachments[0];
       const body = msg.text
         ?? (att?.mimeType.startsWith("image/")
           ? `[Image sent — call memory_search with user_key and content_type="image" to get the description]`
           : `[${att?.mimeType ?? "attachment"}]`);
-      lines.push(`[${time}] ${speaker}: ${body}`);
+      lines.push(`[${time}ms] ${speaker}: ${body}`);
     }
     lines.push("--- End of history ---", "");
   }

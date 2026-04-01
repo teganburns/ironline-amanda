@@ -22,6 +22,12 @@
         <string>http://localhost:3000/imessage/mcp</string>
         <key>CONTEXT_MCP_URL</key>
         <string>http://localhost:3001/context/mcp</string>
+        <key>LANGFUSE_SECRET_KEY</key>
+        <string>sk-lf-87cf3c47-205e-4048-bd46-73243ab6231c</string>
+        <key>LANGFUSE_PUBLIC_KEY</key>
+        <string>pk-lf-7a355215-cbaa-4f1e-8759-9a2d61c87bc2</string>
+        <key>LANGFUSE_BASE_URL</key>
+        <string>https://us.cloud.langfuse.com</string>
     </dict>
 
     <key>WorkingDirectory</key>

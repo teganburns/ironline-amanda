@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@openai/agents": "^0.8.1",
+    "langfuse": "^3.38.6",
     "node-typedstream": "^1.4.1"
   }
 }
