@@ -14,36 +14,27 @@
 
 import { Agent, run, MCPServerStreamableHttp, setDefaultOpenAIKey } from "@openai/agents";
 import Langfuse from "langfuse";
-import { readFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getMessages } from "./db.js";
+import { loadProjectEnv } from "./env";
+import { getAmandaLanceDbContextBearer, getAmandaLanceDbContextMcpUrl, getIMessageLocalMcpUrl } from "./mcp-endpoints";
+import { compilePublishedPromptGraph } from "./studio/prompt-graphs";
+import type { ArtifactRecord, RunPromptSource, RunRequest, RunResult, TimelineEvent, ToolEvent } from "./studio/types";
 
-const MCP_URL = process.env.MCP_URL ?? "http://localhost:3000/imessage/mcp";
-const CONTEXT_MCP_URL = process.env.CONTEXT_MCP_URL ?? "http://localhost:3001/context/mcp";
-const AUTH_TOKEN = process.env.AUTH_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY_AMANDA_IRONLINE_AGENT ?? process.env.OPENAI_API_KEY;
+loadProjectEnv();
+
+const MCP_URL = getIMessageLocalMcpUrl();
+const CONTEXT_MCP_URL = getAmandaLanceDbContextMcpUrl();
 
 const TRIAGE_MODEL = "gpt-5.4-nano";
 const STANDARD_MODEL = process.env.STANDARD_MODEL ?? "gpt-5.4";
 const REASONING_MODEL = process.env.REASONING_MODEL ?? "gpt-5.4-nano";
 const IMAGE_MODEL = process.env.IMAGE_MODEL ?? "gpt-4o";
 
-if (!AUTH_TOKEN) throw new Error("AUTH_TOKEN env var is required");
-if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY_AMANDA_IRONLINE_AGENT env var is required");
-
-setDefaultOpenAIKey(OPENAI_API_KEY);
-
-const langfuse = new Langfuse({
-  secretKey: process.env.LANGFUSE_SECRET_KEY,
-  publicKey:  process.env.LANGFUSE_PUBLIC_KEY,
-  baseUrl:    process.env.LANGFUSE_BASE_URL,
-});
-
-// Load Ironline context facts — edit context.md to update what Amanda knows
-const CONTEXT_PATH = join(import.meta.dir, "..", "context.md");
-const IRONLINE_CONTEXT = existsSync(CONTEXT_PATH) ? readFileSync(CONTEXT_PATH, "utf-8").trim() : "";
+let langfuseClient: Langfuse | null = null;
 
 export type MessageType = "text" | "image" | "video" | "audio" | "file" | "reaction";
 
@@ -72,14 +63,129 @@ interface ClassificationResult {
   holding_reply?: string;
 }
 
+function timelineEvent(
+  source: TimelineEvent["source"],
+  kind: string,
+  summary: string,
+  rawPayload?: unknown
+): TimelineEvent {
+  return {
+    source,
+    kind,
+    timestamp: new Date().toISOString(),
+    summary,
+    rawPayload,
+  };
+}
 
-export async function callAgent(payload: MessagePayload): Promise<void> {
+function getAuthToken(): string {
+  const token = process.env.AUTH_TOKEN;
+  if (!token) throw new Error("AUTH_TOKEN env var is required");
+  return token;
+}
+
+function getOpenAIKey(): string {
+  const apiKey = process.env.OPENAI_API_KEY_AMANDA_IRONLINE_AGENT ?? process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error("OPENAI_API_KEY_AMANDA_IRONLINE_AGENT env var is required");
+  return apiKey;
+}
+
+function getContextMcpBearer(): string {
+  const token = getAmandaLanceDbContextBearer();
+  if (!token) throw new Error("LANCE_DB_DEFAULT_API_KEY env var is required for the remote LanceDB Context MCP");
+  return token;
+}
+
+function getLangfuse(): Langfuse {
+  if (!langfuseClient) {
+    langfuseClient = new Langfuse({
+      secretKey: process.env.LANGFUSE_SECRET_KEY,
+      publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+      baseUrl: process.env.LANGFUSE_BASE_URL,
+    });
+  }
+
+  return langfuseClient;
+}
+
+export interface PromptExecutionOptions {
+  compiledInstructions?: string;
+  promptSource?: RunPromptSource;
+}
+
+function resolvePromptExecution(agentId: string, options: PromptExecutionOptions = {}) {
+  if (options.compiledInstructions && options.promptSource) {
+    return options;
+  }
+
+  const published = compilePublishedPromptGraph(agentId);
+  return {
+    compiledInstructions: options.compiledInstructions ?? published.compiledInstructions,
+    promptSource:
+      options.promptSource ??
+      ({
+        variantId: published.variant.id,
+        variantName: published.variant.name,
+        sourceMode: "published",
+      } satisfies RunPromptSource),
+  };
+}
+
+export async function callAgent(
+  payload: MessagePayload,
+  request: Partial<RunRequest> = {},
+  promptExecutionOptions: PromptExecutionOptions = {}
+): Promise<RunResult> {
+  const AUTH_TOKEN = getAuthToken();
+  const CONTEXT_MCP_BEARER = getContextMcpBearer();
+  const OPENAI_API_KEY = getOpenAIKey();
+  setDefaultOpenAIKey(OPENAI_API_KEY);
+  const langfuse = getLangfuse();
+  const runId = request.id ?? randomUUID();
+  const startedAt = new Date().toISOString();
+  const timeline: TimelineEvent[] = [
+    timelineEvent("runtime", "run.started", `Run started for ${payload.sender}`, {
+      trigger: request.trigger ?? payload.trigger,
+      channel: request.channel ?? "imessage",
+    }),
+  ];
+  const toolEvents: ToolEvent[] = [];
+  const artifacts: ArtifactRecord[] = [];
+
+  const normalizedRequest: RunRequest = {
+    id: runId,
+    trigger: request.trigger ?? payload.trigger,
+    channel: request.channel ?? "imessage",
+    input: request.input ?? payload.text ?? `[${payload.message_type}]`,
+    context: request.context ?? {
+      sender: payload.sender,
+      sender_name: payload.sender_name,
+      chat_id: payload.chat_id,
+      service: payload.service,
+    },
+    agentId: request.agentId ?? "amanda-core",
+    approvalMode: request.approvalMode ?? "autonomous",
+    messagePayload: request.messagePayload ?? payload,
+    replayOfRunId: request.replayOfRunId,
+  };
+  const promptExecution = resolvePromptExecution(normalizedRequest.agentId ?? "amanda-core", promptExecutionOptions);
+
+  if (!CONTEXT_MCP_URL) {
+    throw new Error("AMANDA_LANCEDB_CONTEXT_MCP_URL env var is required for Amanda's remote LanceDB Context MCP.");
+  }
+
   const trace = langfuse.trace({
     name:     "amanda-message",
     userId:   payload.sender,
     input:    { message: payload.text, message_type: payload.message_type },
-    metadata: { chat_id: payload.chat_id, sender_name: payload.sender_name },
-    tags:     ["imessage"],
+    metadata: {
+      chat_id: payload.chat_id,
+      sender_name: payload.sender_name,
+      run_id: runId,
+      prompt_variant_id: promptExecution.promptSource?.variantId,
+      prompt_source_mode: promptExecution.promptSource?.sourceMode,
+    },
+    tags:     ["imessage", "studio"],
   });
 
   // history is DESC ordered — history[0] is the triggering message.
@@ -101,6 +207,11 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
   }
 
   console.log(`[agent] calling with payload for ${payload.sender_name ?? payload.sender}`);
+  timeline.push(
+    timelineEvent("runtime", "history.loaded", `Loaded ${history.length} messages of history`, {
+      chatId: payload.chat_id,
+    })
+  );
 
   const mcpServer = new MCPServerStreamableHttp({
     name: "imessage",
@@ -111,26 +222,53 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
   const contextMcpServer = new MCPServerStreamableHttp({
     name: "context",
     url: CONTEXT_MCP_URL,
-    requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } },
+    requestInit: { headers: { Authorization: `Bearer ${CONTEXT_MCP_BEARER}` } },
   });
 
   try {
     await mcpServer.connect();
     await contextMcpServer.connect();
+    timeline.push(timelineEvent("connector", "mcp.connected", "Connected iMessage and context MCP servers"));
 
     // ── Triage ────────────────────────────────────────────────────────────────
     const classification = await classifyMessage(payload, history, trace);
     console.log(`[agent] tier: ${classification.tier}`);
     trace.update({ metadata: { chat_id: payload.chat_id, sender_name: payload.sender_name, tier: classification.tier } });
+    timeline.push(
+      timelineEvent("agent", "triage.completed", `Classified incoming message as ${classification.tier}`, classification)
+    );
 
     if (classification.tier === "no_reply") {
       console.log("[agent] no reply needed — exiting");
-      return;
+      const finishedAt = new Date().toISOString();
+      const result: RunResult = {
+        id: runId,
+        status: "completed",
+        output: null,
+        traceId: trace.id,
+        toolEvents,
+        artifacts,
+        startedAt,
+        finishedAt,
+        timeline: [
+          ...timeline,
+          timelineEvent("runtime", "run.completed", "No reply required for this message"),
+        ],
+        request: normalizedRequest,
+        tier: classification.tier,
+      };
+      return result;
     }
 
     // Send holding reply immediately for slow tiers before heavy processing
     if (classification.holding_reply) {
       const holdSpan = trace.span({ name: "holding-reply", input: { text: classification.holding_reply } });
+      toolEvents.push({
+        name: "send_message",
+        status: "started",
+        timestamp: new Date().toISOString(),
+        summary: classification.holding_reply,
+      });
       try {
         const holdResult = await (mcpServer as any).callTool("send_message", {
           recipient: payload.sender,
@@ -140,13 +278,36 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
         if (holdResult?.isError) {
           console.error(`[agent] holding reply failed: ${holdResult.content?.[0]?.text ?? JSON.stringify(holdResult)}`);
           holdSpan.end({ output: { status: "error" } });
+          toolEvents.push({
+            name: "send_message",
+            status: "error",
+            timestamp: new Date().toISOString(),
+            summary: "Holding reply failed",
+            rawPayload: holdResult,
+          });
+          timeline.push(timelineEvent("tool", "holding-reply.error", "Holding reply failed", holdResult));
         } else {
           console.log(`[agent] holding reply sent: "${classification.holding_reply}"`);
           holdSpan.end({ output: { status: "sent" } });
+          toolEvents.push({
+            name: "send_message",
+            status: "completed",
+            timestamp: new Date().toISOString(),
+            summary: "Holding reply sent",
+            rawPayload: holdResult,
+          });
+          timeline.push(timelineEvent("tool", "holding-reply.sent", "Holding reply sent", holdResult));
         }
       } catch (e: any) {
         console.error(`[agent] holding reply callTool threw: ${e?.message ?? String(e)}`);
         holdSpan.end({ output: { status: "error", error: String(e) } });
+        toolEvents.push({
+          name: "send_message",
+          status: "error",
+          timestamp: new Date().toISOString(),
+          summary: e?.message ?? String(e),
+        });
+        timeline.push(timelineEvent("tool", "holding-reply.error", "Holding reply threw an exception", String(e)));
       }
     }
 
@@ -176,6 +337,17 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
           const description = await describeImage(filePath, att.mimeType, trace);
           imageDescriptions.push(description);
           console.log(`[agent] described image: ${att.filename}`);
+          artifacts.push({
+            kind: "image-description",
+            label: att.filename,
+            content: description,
+            uri: filePath,
+          });
+          timeline.push(
+            timelineEvent("agent", "image.described", `Described image attachment ${att.filename}`, {
+              filePath,
+            })
+          );
 
           // Store in vector DB via context-mcp
           let storeResult: any;
@@ -199,8 +371,14 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
           }
 
           console.log(`[agent] stored image memory for ${payload.sender}`, storeResult);
+          timeline.push(
+            timelineEvent("tool", "memory_store.completed", "Stored image description in context memory", storeResult)
+          );
         } catch (e: any) {
           console.error(`[agent] image processing failed: ${e?.message ?? String(e)}`);
+          timeline.push(
+            timelineEvent("tool", "image-processing.error", e?.message ?? "Image processing failed", String(e))
+          );
         }
       }
     }
@@ -209,11 +387,21 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
     const text = formatInput(payload, history, imageDescriptions);
     const { model, maxTurns } = getModelConfig(classification.tier);
     console.log(`[agent] model: ${model}, maxTurns: ${maxTurns}`);
+    artifacts.push({
+      kind: "prompt",
+      label: "Compiled instructions",
+      content: promptExecution.compiledInstructions,
+    });
+    artifacts.push({
+      kind: "prompt",
+      label: "Formatted agent input",
+      content: text,
+    });
 
     const agent = new Agent({
       name: "Amanda",
       model,
-      instructions: buildInstructions(),
+      instructions: promptExecution.compiledInstructions,
       mcpServers: [mcpServer, contextMcpServer],
     });
 
@@ -230,6 +418,17 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
     for (const toolName of toolCalls) {
       const toolSpan = agentSpan.span({ name: `tool-call:${toolName}` });
       toolSpan.end();
+      toolEvents.push({
+        name: toolName,
+        status: "completed",
+        timestamp: new Date().toISOString(),
+        summary: "Tool executed during agent run",
+      });
+      timeline.push(
+        timelineEvent("tool", "tool.completed", `Tool ${toolName} executed`, {
+          name: toolName,
+        })
+      );
     }
     agentSpan.end({ output: { finalOutput: result.finalOutput, toolCalls } });
 
@@ -243,10 +442,59 @@ export async function callAgent(payload: MessagePayload): Promise<void> {
     );
     if (!sentMessage && classification.tier !== "no_reply") {
       console.warn(`[agent] warning — completed without calling send_message`);
+      timeline.push(
+        timelineEvent("runtime", "reply.missing", "Run completed without an outbound send tool call")
+      );
     }
+
+    const finishedAt = new Date().toISOString();
+    return {
+      id: runId,
+      status: "completed",
+      output: result.finalOutput ?? null,
+      traceId: trace.id,
+      toolEvents,
+      artifacts: [
+        ...artifacts,
+        {
+          kind: "result",
+          label: "Agent final output",
+          content: result.finalOutput ?? "",
+        },
+      ],
+      startedAt,
+      finishedAt,
+      timeline: [
+        ...timeline,
+        timelineEvent("runtime", "run.completed", "Run completed successfully", {
+          toolCalls,
+        }),
+      ],
+      request: normalizedRequest,
+      promptSource: promptExecution.promptSource,
+      tier: classification.tier,
+    };
   } catch (e: any) {
     console.error(`[agent] error: ${e?.message ?? String(e)}`);
     trace.update({ output: { error: String(e) } });
+    const finishedAt = new Date().toISOString();
+    return {
+      id: runId,
+      status: "failed",
+      output: null,
+      traceId: trace.id,
+      toolEvents,
+      artifacts,
+      startedAt,
+      finishedAt,
+      timeline: [
+        ...timeline,
+        timelineEvent("runtime", "run.failed", e?.message ?? "Run failed", String(e)),
+      ],
+      request: normalizedRequest,
+      promptSource: promptExecution.promptSource,
+      error: e?.message ?? String(e),
+    };
   } finally {
     await mcpServer.close().catch(() => {});
     await contextMcpServer.close().catch(() => {});
@@ -278,8 +526,9 @@ Holding reply guidelines: short, conversational, context-aware. Examples: "Got i
 async function classifyMessage(
   payload: MessagePayload,
   history: ReturnType<typeof getMessages>,
-  trace: ReturnType<typeof langfuse.trace>
+  trace: ReturnType<Langfuse["trace"]>
 ): Promise<ClassificationResult> {
+  const OPENAI_API_KEY = getOpenAIKey();
   // Images are always routed to the image pipeline — no need to ask nano.
   if (payload.message_type === "image") {
     return {
@@ -392,8 +641,9 @@ function getModelConfig(tier: MessageTier): { model: string; maxTurns: number } 
 async function describeImage(
   filePath: string,
   mimeType: string,
-  trace: ReturnType<typeof langfuse.trace>
+  trace: ReturnType<Langfuse["trace"]>
 ): Promise<string> {
+  const OPENAI_API_KEY = getOpenAIKey();
   let readPath = filePath;
   let actualMime = mimeType;
   let tmpDir: string | null = null;
@@ -476,7 +726,7 @@ async function describeImage(
 
 // ── Context formatting ────────────────────────────────────────────────────────
 
-function formatInput(
+export function formatInput(
   payload: MessagePayload,
   history: ReturnType<typeof getMessages>,
   imageDescriptions: string[] = []
@@ -524,56 +774,6 @@ function formatInput(
 
 // ── Agent instructions ────────────────────────────────────────────────────────
 
-function buildInstructions(): string {
-  const core = `
-You are Amanda, an AI operations agent for Ironline. You are not a chatbot — you are an intelligent operator that sits between incoming communication and execution.
-
-When you receive a message you follow this pipeline:
-1. CLASSIFY — who is the sender, what role do they have, what are they asking? Is the request clear, ambiguous, or risky?
-2. GATHER CONTEXT — use available tools to pull any relevant context (message history, contact info, etc.)
-3. DECIDE — execute directly if the request is clear and low-risk. Ask for clarification if ambiguous. Escalate if out of scope or risky.
-4. ACT — call the appropriate tool to respond (send_message, send_image, send_file) or log and route to a human.
-
-CRITICAL: You are not a chat interface. Outputting text does nothing — the sender will never see it. Your ONLY way to communicate with a sender is by calling send_message (or send_image/send_file). Every conversation must end with a tool call to send a reply, or a deliberate decision not to respond (with a reason logged as your final text output).
-
-Note: For some messages a brief holding reply has already been sent automatically before you ran. Your reply is the real, substantive response — make it count.
-
-Guidelines:
-- Reply like a human would over text. Most replies should be one sentence. "Sure, what's the question?" is a complete, correct response to "Hey, quick question." Do not anticipate, list options, or explain your capabilities unless directly asked.
-- Never use bullet points, numbered lists, headers, or em dashes (—) in replies.
-- Match the sender's emotional tone. If they express excitement, happiness, or enthusiasm, reflect that back with an emoji or matching energy — don't respond flatly to emotional messages. "I'm so excited!" deserves "That's awesome! 🎉" not a dry follow-up question.
-- Do not add context, caveats, or follow-up offers to a reply unless the sender's message actually calls for it.
-- When in doubt, ask a clarifying question rather than guessing.
-- Never take irreversible actions (sending files, making commitments) without sufficient context.
-- If a request is outside your current capabilities, say so clearly and suggest next steps.
-- NEVER invent or guess facts about Ironline, its products, team, or URLs. Only state what is in your context below.
-
-Privacy and data isolation (strict):
-- You are handling private conversations. Treat everything as confidential.
-- You may only share a sender's own conversation history back with them — never another person's messages.
-- Never reveal the contents of other chats, who else has contacted Ironline, or anything another person has told you.
-- Never read or share another contact's memory entry with the current sender. Only read the current sender's own memory key.
-- If asked about other people's conversations or data, decline clearly: "I can't share information from other conversations."
-- When using get_messages or search_messages, only do so in the context of the current sender's own chat — do not retrieve messages from other chats to share with this sender.
-- When using list_chats, do not relay the names or details of other conversations to the sender.
-
-Memory:
-- At the start of every conversation, call memory_get_user with user_key=sender's phone and content_type="profile" to load their contact summary.
-- Always pass user_key = the sender's phone number (e.g. +13128344710) or email when storing memories.
-- Always pass source_chat_id = the Chat ID from the conversation context.
-- Pass source_type="group" if the history shows multiple participants besides you and the sender; otherwise "1:1".
-- To update a contact's profile summary, call memory_store with content_type="profile" — this overwrites the previous profile. Write it clearly so future-you can read it quickly.
-- To add a new note or event (not a profile update), use content_type="text" — this appends without deleting anything.
-- Images are pre-analyzed before you run and their descriptions are provided as text in the message context under "--- Attached image(s) ---". They are already stored in memory — you do not need to call memory_store for images.
-- When you see "[Image sent — call memory_search...]" in the conversation history, it means a past image was stored. Call memory_search with the sender's user_key and content_type="image" to retrieve its description before answering any question about it.
-- When a user asks about something visual (count, brand, model, what's in a photo), always check image memory first via memory_search. If the description doesn't contain a clear answer, say so — never guess a model number or brand from old conversation history.
-- Use memory_search to find relevant past context by meaning, always scoped to the current sender's user_key.
-- Never call memory tools with another sender's user_key.
-
-Vector memory tools: memory_store / memory_search / memory_get_user / memory_delete
-  `.trim();
-
-  if (!IRONLINE_CONTEXT) return core;
-
-  return `${core}\n\n## Ironline Context\n\n${IRONLINE_CONTEXT}`;
+export function buildInstructions(): string {
+  return compilePublishedPromptGraph("amanda-core").compiledInstructions;
 }

@@ -3,9 +3,11 @@
  * Persisted to ~/.ironline/seen.json so restarts don't reprocess old messages.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { formatJsonDocument } from "./studio/json";
 
 const STATE_DIR = join(homedir(), ".ironline");
 const STATE_FILE = join(STATE_DIR, "seen.json");
@@ -25,7 +27,7 @@ export function loadSeen(): Set<string> {
   }
 }
 
-export function markSeen(seen: Set<string>, guids: string[]): void {
+export async function markSeen(seen: Set<string>, guids: string[]): Promise<void> {
   for (const g of guids) seen.add(g);
   // Trim oldest entries if over cap
   if (seen.size > MAX_SEEN) {
@@ -35,5 +37,5 @@ export function markSeen(seen: Set<string>, guids: string[]): void {
     for (const e of trimmed) seen.add(e);
   }
   ensureDir();
-  writeFileSync(STATE_FILE, JSON.stringify([...seen]), "utf-8");
+  await writeFile(STATE_FILE, await formatJsonDocument([...seen]), "utf-8");
 }

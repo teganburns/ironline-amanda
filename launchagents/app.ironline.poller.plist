@@ -22,6 +22,10 @@
         <string>http://localhost:3000/imessage/mcp</string>
         <key>CONTEXT_MCP_URL</key>
         <string>http://localhost:3001/context/mcp</string>
+        <key>AMANDA_CONTEXT_MCP_URL</key>
+        <string>http://localhost:3001/context/mcp</string>
+        <key>LANCE_DB_DEFAULT_API_KEY</key>
+        <string>YOUR_LANCE_DB_KEY_HERE</string>
         <key>LANGFUSE_SECRET_KEY</key>
         <string>sk-lf-87cf3c47-205e-4048-bd46-73243ab6231c</string>
         <key>LANGFUSE_PUBLIC_KEY</key>

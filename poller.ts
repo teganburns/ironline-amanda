@@ -10,16 +10,21 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { loadProjectEnv } from "./src/env";
 import { getMessages } from "./src/db";
 import { lookupContact, markChatRead } from "./src/applescript";
 import { loadSeen, markSeen } from "./src/seen";
-import { callAgent, type MessagePayload, type MessageType } from "./src/agent";
+import type { MessagePayload, MessageType } from "./src/agent";
+import { IronlineStudioControl } from "./src/studio/control";
+
+loadProjectEnv();
 
 const POLL_INTERVAL_MS = 5_000;
 // How far back to look on each poll — 2x the interval so we never miss a
 // message if a poll fires slightly late. Seen-GUID deduplication prevents
 // double-processing.
 const POLL_WINDOW_MS = POLL_INTERVAL_MS * 2;
+const studioControl = new IronlineStudioControl();
 
 // ── Message type resolution ───────────────────────────────────────────────────
 
@@ -48,7 +53,7 @@ async function processMessages(
   if (unseen.length === 0) return;
 
   console.log(`[poller] ${unseen.length} new message(s)`);
-  markSeen(seen, unseen.map((m) => m.guid));
+  await markSeen(seen, unseen.map((m) => m.guid));
 
   for (const msg of unseen) {
     const senderName = await lookupContact(msg.sender).catch(() => null);
@@ -65,8 +70,25 @@ async function processMessages(
     };
 
     console.log(`[poller] → agent: ${senderName ?? msg.sender}: ${msg.text ?? `[${payload.message_type}]`}`);
-    await markChatRead(msg.sender).catch(() => {}); // mark read before replying
-    await callAgent(payload);
+    try {
+      await markChatRead(msg.sender).catch(() => {}); // mark read before replying
+      await studioControl.runAgent({
+        trigger: "imessage",
+        channel: "imessage",
+        input: payload.text ?? `[${payload.message_type}]`,
+        context: {
+          sender: payload.sender,
+          sender_name: payload.sender_name,
+          chat_id: payload.chat_id,
+          service: payload.service,
+        },
+        messagePayload: payload,
+      });
+    } catch (error: any) {
+      console.error(
+        `[poller] Amanda could not process ${senderName ?? msg.sender}: ${error?.message ?? String(error)}`
+      );
+    }
   }
 }
 
@@ -81,7 +103,7 @@ async function main() {
   // unread so we don't reprocess anything that arrived before startup.
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const existing = getMessages({ since: oneDayAgo, limit: 1000 });
-  markSeen(seen, existing.map((m) => m.guid));
+  await markSeen(seen, existing.map((m) => m.guid));
   console.log(`[poller] seeded ${existing.length} message(s) from last 24h as seen`);
 
   console.log(`[poller] polling every ${POLL_INTERVAL_MS / 1000}s`);
