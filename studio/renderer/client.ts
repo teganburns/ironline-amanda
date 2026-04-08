@@ -2,6 +2,9 @@ import type {
   ApprovalRule,
   BridgeInfo,
   CompiledPromptPreview,
+  FlowGraph,
+  FlowGraphInput,
+  FlowGraphPatch,
   JobRecord,
   JobSpec,
   McpInvocationResult,
@@ -27,6 +30,7 @@ import { callBridgeMethod } from "./bridge";
 export interface StudioProcessRecord {
   id: string;
   running: boolean;
+  externallyRunning: boolean;
   command: string;
   cwd: string;
   logs: string[];
@@ -144,5 +148,29 @@ export const studioClient = {
   },
   stopProcess(id: string) {
     return callBridgeMethod("stopProcess", id);
+  },
+  quitApp() {
+    return callBridgeMethod("quitApp");
+  },
+  restartApp() {
+    return callBridgeMethod("restartApp");
+  },
+  rebuildAndRestart() {
+    return callBridgeMethod("rebuildAndRestart");
+  },
+  listFlowGraphs(): Promise<FlowGraph[]> {
+    return callBridgeMethod("listFlowGraphs");
+  },
+  getFlowGraph(id: string): Promise<FlowGraph | null> {
+    return callBridgeMethod("getFlowGraph", id);
+  },
+  createFlowGraph(input: FlowGraphInput): Promise<FlowGraph> {
+    return callBridgeMethod("createFlowGraph", input);
+  },
+  updateFlowGraph(id: string, patch: FlowGraphPatch): Promise<FlowGraph> {
+    return callBridgeMethod("updateFlowGraph", id, patch);
+  },
+  deleteFlowGraph(id: string): Promise<FlowGraph[]> {
+    return callBridgeMethod("deleteFlowGraph", id);
   },
 };

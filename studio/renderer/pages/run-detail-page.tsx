@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { useShellContext } from "../context";
 import { studioClient } from "../client";
 import { useAsyncData } from "../hooks/use-async-data";
-import { EmptyState, JsonBlock, LoadingCopy, PageHeader, StatusPill } from "../components/ui";
+import { EmptyState, JsonBlock, LiveTimestamp, LoadingCopy, PageHeader, StatusPill } from "../components/ui";
 import { buildLangfuseTraceUrl, findArtifact } from "../trace-utils";
 
 export function RunDetailPage() {
@@ -13,7 +13,8 @@ export function RunDetailPage() {
   const [replayError, setReplayError] = useState<string | null>(null);
   const { data: run, loading, error, reload } = useAsyncData(
     () => (runId ? studioClient.getRun(runId) : Promise.resolve(null)),
-    [runId]
+    [runId],
+    { pollMs: 10_000 }
   );
   const { data: config } = useAsyncData(() => studioClient.getStudioConfig(), []);
 
@@ -88,11 +89,11 @@ export function RunDetailPage() {
               <div className="meta-grid">
                 <div className="definition-card">
                   <strong>Started</strong>
-                  <p>{new Date(run.startedAt).toLocaleString()}</p>
+                  <p><LiveTimestamp value={run.startedAt} /></p>
                 </div>
                 <div className="definition-card">
                   <strong>Finished</strong>
-                  <p>{new Date(run.finishedAt).toLocaleString()}</p>
+                  <p><LiveTimestamp value={run.finishedAt} /></p>
                 </div>
                 <div className="definition-card">
                   <strong>Tool events</strong>
@@ -162,7 +163,7 @@ export function RunDetailPage() {
                         <StatusPill value={event.status} />
                       </div>
                       <span>{event.summary ?? "No summary captured."}</span>
-                      <small>{new Date(event.timestamp).toLocaleTimeString()}</small>
+                      <small><LiveTimestamp value={event.timestamp} /></small>
                     </div>
                   ))
                 ) : (
@@ -210,7 +211,7 @@ export function RunDetailPage() {
                       <small>{event.source}</small>
                     </div>
                     <span>{event.summary}</span>
-                    <small>{new Date(event.timestamp).toLocaleString()}</small>
+                    <small><LiveTimestamp value={event.timestamp} /></small>
                   </div>
                 ))
               ) : (

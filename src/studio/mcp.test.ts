@@ -6,9 +6,11 @@ const originalAmandaToken = process.env.AMANDA_MCP_TOKEN;
 const originalAuthToken = process.env.AUTH_TOKEN;
 const originalAmandaBaseUrl = process.env.AMANDA_MCP_BASE_URL;
 const originalAmandaContextUrl = process.env.AMANDA_CONTEXT_MCP_URL;
+const originalAmandaLanceDbMcpUrl = process.env.AMANDA_LANCEDB_MCP_URL;
 const originalAmandaLanceDbContextUrl = process.env.AMANDA_LANCEDB_CONTEXT_MCP_URL;
 const originalAmandaIMessageUrl = process.env.AMANDA_IMESSAGE_MCP_URL;
 const originalMcpUrl = process.env.MCP_URL;
+const originalBrowserMcpUrl = process.env.BROWSER_MCP_URL;
 const originalContextMcpUrl = process.env.CONTEXT_MCP_URL;
 const originalLanceDbApiKey = process.env.LANCE_DB_DEFAULT_API_KEY;
 
@@ -17,9 +19,11 @@ afterEach(() => {
   process.env.AUTH_TOKEN = originalAuthToken;
   process.env.AMANDA_MCP_BASE_URL = originalAmandaBaseUrl;
   process.env.AMANDA_CONTEXT_MCP_URL = originalAmandaContextUrl;
+  process.env.AMANDA_LANCEDB_MCP_URL = originalAmandaLanceDbMcpUrl;
   process.env.AMANDA_LANCEDB_CONTEXT_MCP_URL = originalAmandaLanceDbContextUrl;
   process.env.AMANDA_IMESSAGE_MCP_URL = originalAmandaIMessageUrl;
   process.env.MCP_URL = originalMcpUrl;
+  process.env.BROWSER_MCP_URL = originalBrowserMcpUrl;
   process.env.CONTEXT_MCP_URL = originalContextMcpUrl;
   process.env.LANCE_DB_DEFAULT_API_KEY = originalLanceDbApiKey;
 });
@@ -65,6 +69,8 @@ function createReadySession(toolNames: string[]) {
 
 describe("studio mcp helpers", () => {
   test("always includes the remote LanceDB target and marks it unconfigured by default", () => {
+    process.env.AMANDA_CONTEXT_MCP_URL = "";
+    process.env.AMANDA_LANCEDB_MCP_URL = "";
     process.env.AMANDA_LANCEDB_CONTEXT_MCP_URL = "";
     const targets = createDefaultMcpTargets();
     const remoteTarget = targets.find((target) => target.id === MCP_TARGET_IDS.remoteLanceDb)!;
@@ -96,6 +102,8 @@ describe("studio mcp helpers", () => {
   });
 
   test("reports missing remote LanceDB configuration before any MCP probe", async () => {
+    process.env.AMANDA_CONTEXT_MCP_URL = "";
+    process.env.AMANDA_LANCEDB_MCP_URL = "";
     process.env.AMANDA_LANCEDB_CONTEXT_MCP_URL = "";
     process.env.LANCE_DB_DEFAULT_API_KEY = "lancedb-secret";
     const service = new StudioMcpService(createDefaultMcpTargets(), async () => {
@@ -171,5 +179,111 @@ describe("studio mcp helpers", () => {
     expect(overview.status.state).toBe("degraded");
     expect(overview.failedStage).toBe("required_tools");
     expect(overview.missingRequiredTools).toEqual(["memory_delete"]);
+  });
+
+  test("includes the local Temporal MCP target", () => {
+    const targets = createDefaultMcpTargets();
+    const temporalTarget = targets.find((target) => target.id === MCP_TARGET_IDS.localTemporal);
+
+    expect(temporalTarget?.label).toBe("Local Temporal Reminder MCP");
+    expect(temporalTarget?.requiredTools).toEqual(["schedule_reminder"]);
+  });
+
+  test("marks the Temporal MCP offline when the cluster is unreachable", async () => {
+    process.env.AUTH_TOKEN = "local-secret";
+    const service = new StudioMcpService(
+      createDefaultMcpTargets(),
+      async () => createReadySession(["schedule_reminder"]),
+      async () => ({
+        configured: true,
+        reachable: false,
+        detail: "Temporal cluster is unavailable.",
+      })
+    );
+
+    const overview = await service.getOverview(MCP_TARGET_IDS.localTemporal);
+
+    expect(overview.status.state).toBe("offline");
+    expect(overview.failedStage).toBe("connect");
+  });
+
+  test("includes the local Browser MCP target", () => {
+    const targets = createDefaultMcpTargets();
+    const browserTarget = targets.find((target) => target.id === MCP_TARGET_IDS.localBrowser);
+
+    expect(browserTarget?.label).toBe("Local Browser MCP");
+    expect(browserTarget?.requiredTools).toEqual([
+      "browser_navigate",
+      "browser_screenshot",
+      "browser_snapshot",
+      "browser_click",
+      "browser_type",
+    ]);
+  });
+
+  test("marks the Browser MCP degraded when the extension is disconnected", async () => {
+    process.env.AUTH_TOKEN = "local-secret";
+    process.env.BROWSER_MCP_URL = "http://localhost:3003/browser/mcp";
+    const service = new StudioMcpService(
+      createDefaultMcpTargets(),
+      async () =>
+        createReadySession([
+          "browser_navigate",
+          "browser_screenshot",
+          "browser_snapshot",
+          "browser_click",
+          "browser_type",
+        ]),
+      async () => ({
+        configured: true,
+        reachable: true,
+        detail: "Temporal cluster is ready.",
+      }),
+      async () => ({
+        connected: false,
+        detail: "Chrome extension is not currently connected to the local browser bridge.",
+        lastConnectedAt: null,
+        pendingCommandCount: 0,
+        lastError: null,
+      })
+    );
+
+    const overview = await service.getOverview(MCP_TARGET_IDS.localBrowser);
+
+    expect(overview.status.state).toBe("degraded");
+    expect(overview.failedStage).toBe("connect");
+  });
+
+  test("marks the Browser MCP ready when the extension is connected", async () => {
+    process.env.AUTH_TOKEN = "local-secret";
+    process.env.BROWSER_MCP_URL = "http://localhost:3003/browser/mcp";
+    const service = new StudioMcpService(
+      createDefaultMcpTargets(),
+      async () =>
+        createReadySession([
+          "browser_navigate",
+          "browser_screenshot",
+          "browser_snapshot",
+          "browser_click",
+          "browser_type",
+        ]),
+      async () => ({
+        configured: true,
+        reachable: true,
+        detail: "Temporal cluster is ready.",
+      }),
+      async () => ({
+        connected: true,
+        detail: "Chrome extension is connected to the local browser bridge.",
+        lastConnectedAt: new Date("2026-01-01T00:00:00.000Z").toISOString(),
+        pendingCommandCount: 0,
+        lastError: null,
+      })
+    );
+
+    const overview = await service.getOverview(MCP_TARGET_IDS.localBrowser);
+
+    expect(overview.status.state).toBe("ready");
+    expect(overview.failedStage).toBeNull();
   });
 });

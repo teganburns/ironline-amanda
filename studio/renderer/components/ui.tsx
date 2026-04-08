@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { formatExactTimestamp, formatCompactRelativeTime, useLiveNow } from "../time";
 
 const toneMap: Record<string, string> = {
   ready: "ready",
@@ -55,6 +56,57 @@ export function PageHeader({
 export function StatusPill({ value }: { value: string }) {
   const tone = toneMap[value] ?? "placeholder";
   return <span className={`status ${tone}`}>{value.replace(/_/g, " ")}</span>;
+}
+
+export function LiveTimestamp({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  const now = useLiveNow();
+  const exact = formatExactTimestamp(value);
+  const compact = formatCompactRelativeTime(value, now);
+
+  return (
+    <time className={className} dateTime={value} title={exact}>
+      {compact}
+    </time>
+  );
+}
+
+export function CompactListRow({
+  title,
+  meta,
+  status,
+  action,
+  time,
+  className,
+}: {
+  title: ReactNode;
+  meta?: ReactNode;
+  status?: string | ReactNode;
+  action?: ReactNode;
+  time?: string;
+  className?: string;
+}) {
+  const statusNode =
+    typeof status === "string" ? <StatusPill value={status} /> : status;
+
+  return (
+    <div className={`compact-row${className ? ` ${className}` : ""}`}>
+      <div className="compact-row-main">
+        <div className="compact-row-title">{title}</div>
+        {meta ? <div className="compact-row-meta">{meta}</div> : null}
+      </div>
+      <div className="compact-row-side">
+        {action ? <div className="compact-row-action">{action}</div> : null}
+        {statusNode ? <div className="compact-row-status">{statusNode}</div> : null}
+        {time ? <LiveTimestamp className="compact-row-time" value={time} /> : null}
+      </div>
+    </div>
+  );
 }
 
 function formatPrimitive(value: unknown) {

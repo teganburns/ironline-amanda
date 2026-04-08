@@ -1,21 +1,31 @@
 import { useParams } from "react-router-dom";
 import { studioClient } from "../client";
 import { useAsyncData } from "../hooks/use-async-data";
-import { EmptyState, JsonBlock, LoadingCopy, PageHeader, StatusPill } from "../components/ui";
+import { EmptyState, JsonBlock, LiveTimestamp, LoadingCopy, PageHeader, StatusPill } from "../components/ui";
+import type { AgentRunJobPayload, JobRecord, ReminderJobPayload } from "../../../src/studio/types";
+
+function isReminderJob(job: JobRecord): job is JobRecord & { payload: ReminderJobPayload } {
+  return job.jobType === "reminder.send";
+}
+
+function getAgentRunPayload(job: JobRecord): AgentRunJobPayload {
+  return job.payload as AgentRunJobPayload;
+}
 
 export function JobDetailPage() {
   const { jobId } = useParams();
   const { data: job, loading, error } = useAsyncData(
     () => (jobId ? studioClient.getJob(jobId) : Promise.resolve(null)),
-    [jobId]
+    [jobId],
+    { pollMs: 10_000 }
   );
 
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Job detail"
-        title={job?.jobType || "Job detail"}
-        description="Inspect backend, schedule, retry policy, and payload for a tracked callback."
+        title={job?.jobType === "reminder.send" ? "Reminder delivery" : job?.jobType || "Job detail"}
+        description="Inspect backend, schedule, retry policy, payload, and delivery metadata for a tracked callback."
       />
 
       {loading ? <LoadingCopy message="Loading job detail..." /> : null}
@@ -40,16 +50,22 @@ export function JobDetailPage() {
                 </div>
                 <div className="definition-card">
                   <strong>Execute at</strong>
-                  <p>{new Date(job.executeAt).toLocaleString()}</p>
+                  <p><LiveTimestamp value={job.executeAt} /></p>
                 </div>
                 <div className="definition-card">
                   <strong>Created</strong>
-                  <p>{new Date(job.createdAt).toLocaleString()}</p>
+                  <p><LiveTimestamp value={job.createdAt} /></p>
                 </div>
                 <div className="definition-card">
                   <strong>Updated</strong>
-                  <p>{new Date(job.updatedAt).toLocaleString()}</p>
+                  <p><LiveTimestamp value={job.updatedAt} /></p>
                 </div>
+                {job.completedAt ? (
+                  <div className="definition-card">
+                    <strong>Completed</strong>
+                    <p><LiveTimestamp value={job.completedAt} /></p>
+                  </div>
+                ) : null}
               </div>
               {job.lastError ? <p className="empty">Last error: {job.lastError}</p> : null}
             </article>
@@ -57,11 +73,30 @@ export function JobDetailPage() {
             <article className="panel">
               <div className="panel-header">
                 <div>
-                  <p className="eyebrow">Retry policy</p>
-                  <h3>Resilience configuration</h3>
+                  <p className="eyebrow">{isReminderJob(job) ? "Reminder" : "Retry policy"}</p>
+                  <h3>{isReminderJob(job) ? "Delivery details" : "Resilience configuration"}</h3>
                 </div>
               </div>
-              {job.retryPolicy ? (
+              {isReminderJob(job) ? (
+                <div className="meta-grid">
+                  <div className="definition-card">
+                    <strong>Message</strong>
+                    <p>{job.payload.messageText}</p>
+                  </div>
+                  <div className="definition-card">
+                    <strong>Target</strong>
+                    <p>{job.payload.target.summary ?? job.payload.target.recipient ?? job.payload.target.chatId ?? "Current chat"}</p>
+                  </div>
+                  <div className="definition-card">
+                    <strong>Requested time</strong>
+                    <p>{job.payload.requestedTime}</p>
+                  </div>
+                  <div className="definition-card">
+                    <strong>Delivery outcome</strong>
+                    <p>{job.delivery?.ok ? job.delivery.targetSummary : job.failureDetail ?? "Pending delivery"}</p>
+                  </div>
+                </div>
+              ) : job.retryPolicy ? (
                 <div className="meta-grid">
                   <div className="definition-card">
                     <strong>Max attempts</strong>
@@ -81,6 +116,21 @@ export function JobDetailPage() {
               )}
             </article>
           </section>
+
+          {!isReminderJob(job) ? (
+            <article className="panel">
+              <div className="panel-header">
+                <div>
+                  <p className="eyebrow">Agent rerun</p>
+                  <h3>Scheduled run payload</h3>
+                </div>
+              </div>
+              <div className="definition-card">
+                <strong>Input</strong>
+                <p>{getAgentRunPayload(job).input}</p>
+              </div>
+            </article>
+          ) : null}
 
           <article className="panel">
             <div className="panel-header">

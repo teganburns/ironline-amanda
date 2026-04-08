@@ -5,6 +5,7 @@ import { createDefaultConnectors } from "./connectors";
 import { resolveApprovalMode } from "./approval";
 import { MCP_TARGET_IDS, StudioMcpService } from "./mcp";
 import { PromptGraphStore, compilePublishedPromptGraph } from "./prompt-graphs";
+import { FlowGraphStore } from "./flow-graphs";
 import { scheduleTemporalJob } from "./temporal";
 import { StudioRunStore } from "./run-store";
 import type {
@@ -13,6 +14,9 @@ import type {
   BridgeInfo,
   CompiledPromptPreview,
   ConnectorAdapter,
+  FlowGraph,
+  FlowGraphInput,
+  FlowGraphPatch,
   JobRecord,
   JobSpec,
   McpInvocationResult,
@@ -96,6 +100,7 @@ export class IronlineStudioControl {
   private readonly connectors: ConnectorAdapter[];
   private readonly agentDefinition: AgentDefinition;
   private readonly promptGraphStore: PromptGraphStore;
+  private readonly flowGraphStore: FlowGraphStore;
   private readonly mcpService: StudioMcpService;
   private readonly agentExecutor: (
     payload: MessagePayload,
@@ -107,6 +112,7 @@ export class IronlineStudioControl {
     this.runStore = deps.runStore ?? new StudioRunStore();
     this.agentDefinition = deps.agentDefinition ?? getDefaultAgentDefinition();
     this.promptGraphStore = deps.promptGraphStore ?? new PromptGraphStore(this.agentDefinition.id);
+    this.flowGraphStore = new FlowGraphStore();
     this.mcpService = deps.mcpService ?? new StudioMcpService();
     this.connectors = deps.connectors ?? createDefaultConnectors(this.mcpService);
     this.agentExecutor = deps.agentExecutor ?? ((payload, request, promptExecution) => callAgent(payload, request, promptExecution));
@@ -167,7 +173,7 @@ export class IronlineStudioControl {
   }
 
   private async ensureRuntimeReadiness(request: RunRequest): Promise<void> {
-    const requiredTargetIds = [MCP_TARGET_IDS.remoteLanceDb];
+    const requiredTargetIds = [MCP_TARGET_IDS.localContext];
 
     if (request.trigger === "imessage") {
       requiredTargetIds.push(MCP_TARGET_IDS.localIMessage);
@@ -235,7 +241,9 @@ export class IronlineStudioControl {
       id: spec.id ?? randomUUID(),
       status: spec.status ?? "scheduled",
     };
-    const scheduled = await scheduleTemporalJob(normalized);
+    const scheduled = await scheduleTemporalJob(normalized, {
+      allowLocalFallback: normalized.jobType !== "reminder.send",
+    });
     return this.runStore.saveJob(
       { ...normalized, id: scheduled.remoteId, status: "scheduled" },
       scheduled.backend
@@ -360,6 +368,26 @@ export class IronlineStudioControl {
       },
       this.promptGraphStore.compileVariant(variant.id).compiledInstructions
     );
+  }
+
+  listFlowGraphs(): Promise<FlowGraph[]> {
+    return Promise.resolve(this.flowGraphStore.listGraphs());
+  }
+
+  getFlowGraph(id: string): Promise<FlowGraph | null> {
+    return Promise.resolve(this.flowGraphStore.getGraph(id));
+  }
+
+  createFlowGraph(input: FlowGraphInput): Promise<FlowGraph> {
+    return this.flowGraphStore.createGraph(input);
+  }
+
+  updateFlowGraph(id: string, patch: FlowGraphPatch): Promise<FlowGraph> {
+    return this.flowGraphStore.updateGraph(id, patch);
+  }
+
+  deleteFlowGraph(id: string): Promise<FlowGraph[]> {
+    return this.flowGraphStore.deleteGraph(id);
   }
 
   async listMcpTargets(): Promise<McpTargetDefinition[]> {

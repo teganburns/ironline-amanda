@@ -67,6 +67,26 @@ export function NavIcon({ icon }: { icon: StudioNavIcon }) {
           <circle cx="16" cy="17" r="3" />
         </svg>
       );
+    case "flow":
+      return (
+        <svg {...common}>
+          <circle cx="5" cy="12" r="2" />
+          <circle cx="19" cy="5" r="2" />
+          <circle cx="19" cy="19" r="2" />
+          <path d="M7 12h5" />
+          <path d="M14 6.5 7 11" />
+          <path d="M14 17.5 7 13" />
+        </svg>
+      );
+    case "browser":
+      return (
+        <svg {...common}>
+          <rect x="2" y="4" width="20" height="16" rx="2" />
+          <path d="M2 9h20" />
+          <circle cx="6" cy="6.5" r="1" fill="currentColor" stroke="none" />
+          <circle cx="10" cy="6.5" r="1" fill="currentColor" stroke="none" />
+        </svg>
+      );
     case "observability":
       return (
         <svg {...common}>

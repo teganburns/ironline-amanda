@@ -5,6 +5,8 @@ export type StudioNavIcon =
   | "connectors"
   | "mcps"
   | "agent"
+  | "flow"
+  | "browser"
   | "observability";
 
 export const navItems = [
@@ -14,6 +16,8 @@ export const navItems = [
   { to: "/connectors", label: "Connectors", icon: "connectors" },
   { to: "/mcps", label: "MCPs", icon: "mcps" },
   { to: "/agent", label: "Agent", icon: "agent" },
+  { to: "/flow", label: "Flow", icon: "flow" },
+  { to: "/browser", label: "Browser", icon: "browser" },
   { to: "/observability", label: "Observability", icon: "observability" },
 ] as const;
 

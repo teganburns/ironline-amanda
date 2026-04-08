@@ -3,7 +3,7 @@ import type { McpInvocationResult } from "../../../src/studio/types";
 import { studioClient } from "../client";
 import { useAsyncData } from "../hooks/use-async-data";
 import { listMcpSessionHistory, recordMcpSessionHistory } from "../mcp-session-history";
-import { EmptyState, JsonBlock, LoadingCopy, PageHeader, StatusPill } from "../components/ui";
+import { CompactListRow, EmptyState, JsonBlock, LoadingCopy, PageHeader, StatusPill } from "../components/ui";
 
 function parseJsonInput(source: string): Record<string, unknown> {
   if (!source.trim()) return {};
@@ -412,18 +412,16 @@ export function McpsPage() {
             <h3>Recent MCP invocations</h3>
           </div>
         </div>
-        <div className="list">
+        <div className="compact-list">
           {!history.length ? <EmptyState message="No MCP calls have been made in this app session yet." /> : null}
           {history.map((entry) => (
-            <div className="run-card" key={entry.id}>
-              <div className="panel-row">
-                <strong>{entry.summary}</strong>
-                <StatusPill value={entry.actionType === "tool" ? "ready" : "placeholder"} />
-              </div>
-              <small>
-                {entry.targetId} • {new Date(entry.createdAt).toLocaleString()}
-              </small>
-            </div>
+            <CompactListRow
+              key={entry.id}
+              title={entry.summary}
+              meta={`${entry.targetId} • ${entry.actionType}`}
+              status={entry.ok ? "ready" : "failed"}
+              time={entry.createdAt}
+            />
           ))}
         </div>
       </article>

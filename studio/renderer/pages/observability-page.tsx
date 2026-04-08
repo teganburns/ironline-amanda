@@ -2,8 +2,9 @@ import { Link } from "react-router-dom";
 import { useShellContext } from "../context";
 import { useAsyncData } from "../hooks/use-async-data";
 import { studioClient } from "../client";
-import { JsonBlock, PageHeader, StatusPill } from "../components/ui";
+import { CompactListRow, EmptyState, JsonBlock, PageHeader } from "../components/ui";
 import { buildLangfuseTraceUrl } from "../trace-utils";
+import { truncateMiddle } from "../time";
 
 export function ObservabilityPage() {
   const { snapshot } = useShellContext();
@@ -26,34 +27,32 @@ export function ObservabilityPage() {
               <h3>Runs with Langfuse traces</h3>
             </div>
           </div>
-          <div className="list">
+          <div className="compact-list">
+            {!tracedRuns.length ? <EmptyState message="No Langfuse traces are available in the current run window." /> : null}
             {tracedRuns.map((run) => (
-              <div key={run.id} className="run-card">
-                <div className="panel-row">
-                  <Link className="quick-link" to={`/runs/${run.id}`}>
+              <CompactListRow
+                key={run.id}
+                title={
+                  <Link className="compact-row-link" to={`/runs/${run.id}`}>
                     {run.request.input || "Untitled run"}
                   </Link>
-                  <StatusPill value={run.promptSource?.sourceMode ?? "placeholder"} />
-                </div>
-                <small>{run.traceId}</small>
-                <div className="quick-links">
-                  {run.promptSource ? (
-                    <Link className="quick-link subtle-link" to={`/agent?variant=${run.promptSource.variantId}`}>
-                      {run.promptSource.variantName}
-                    </Link>
-                  ) : null}
-                  {buildLangfuseTraceUrl(config?.langfuseBaseUrl, run.traceId) ? (
+                }
+                meta={`${run.promptSource?.variantName ?? "Unknown variant"} • ${run.traceId ? truncateMiddle(run.traceId) : "No trace id"}`}
+                action={
+                  buildLangfuseTraceUrl(config?.langfuseBaseUrl, run.traceId) ? (
                     <a
-                      className="quick-link subtle-link"
+                      className="compact-row-link subtle-link"
                       href={buildLangfuseTraceUrl(config?.langfuseBaseUrl, run.traceId)!}
                       rel="noreferrer"
                       target="_blank"
                     >
-                      Open Langfuse trace
+                      Langfuse
                     </a>
-                  ) : null}
-                </div>
-              </div>
+                  ) : null
+                }
+                status={run.promptSource?.sourceMode ?? "placeholder"}
+                time={run.startedAt}
+              />
             ))}
           </div>
         </article>

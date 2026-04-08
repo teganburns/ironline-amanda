@@ -6,6 +6,7 @@ interface ManagedProcessConfig {
   id: string;
   cwd: string;
   command: string[];
+  healthUrl?: string;
 }
 
 interface ManagedState {
@@ -29,16 +30,30 @@ export class StudioProcessManager {
         id: "imessage",
         cwd: join(rootDir, "..", "ironline-imessage-mcp"),
         command: [this.bunBinary, "http.ts"],
+        healthUrl: "http://localhost:3000/imessage/mcp",
       },
       {
         id: "context",
         cwd: join(rootDir, "..", "ironline-context-mcp"),
         command: [this.bunBinary, "http.ts"],
+        healthUrl: "http://localhost:3001/context/mcp",
       },
       {
         id: "temporal-worker",
         cwd: rootDir,
         command: [this.bunBinary, "src/studio/temporal-worker.ts"],
+      },
+      {
+        id: "temporal-mcp",
+        cwd: rootDir,
+        command: [this.bunBinary, "src/studio/temporal-mcp.ts"],
+        healthUrl: "http://localhost:3002/temporal/mcp",
+      },
+      {
+        id: "browser",
+        cwd: join(rootDir, "..", "ironline-browser-mcp"),
+        command: [this.bunBinary, "http.ts"],
+        healthUrl: "http://localhost:3003/browser/mcp",
       },
     ];
 
@@ -55,10 +70,29 @@ export class StudioProcessManager {
     return [...this.processes.values()].map((state) => ({
       id: state.config.id,
       running: state.process !== null && !state.process.killed,
+      externallyRunning: false,
       command: state.config.command.join(" "),
       cwd: state.config.cwd,
       logs: state.logs.slice(-20),
     }));
+  }
+
+  async listWithHealth() {
+    const base = this.list();
+    return Promise.all(
+      base.map(async (item) => {
+        if (item.running) return item;
+        const state = this.processes.get(item.id);
+        const healthUrl = state?.config.healthUrl;
+        if (!healthUrl) return item;
+        try {
+          await fetch(healthUrl, { signal: AbortSignal.timeout(800) });
+          return { ...item, externallyRunning: true };
+        } catch {
+          return item;
+        }
+      })
+    );
   }
 
   start(id: string) {
@@ -83,6 +117,13 @@ export class StudioProcessManager {
 
     state.process = child;
     return this.list().find((item) => item.id === id);
+  }
+
+  stopAll() {
+    for (const state of this.processes.values()) {
+      state.process?.kill("SIGTERM");
+      state.process = null;
+    }
   }
 
   stop(id: string) {

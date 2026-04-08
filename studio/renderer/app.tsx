@@ -13,8 +13,11 @@ import { JobDetailPage } from "./pages/job-detail-page";
 import { ConnectorsPage } from "./pages/connectors-page";
 import { McpsPage } from "./pages/mcps-page";
 import { AgentPage } from "./pages/agent-page";
+import { FlowPage } from "./pages/flow-page";
 import { ObservabilityPage } from "./pages/observability-page";
+import { BrowserPage } from "./pages/browser-page";
 import type { ShellContextValue } from "./context";
+import { useVisibilityPolling } from "./hooks/use-visibility-polling";
 
 const STARTUP_MESSAGES = [
   "Warming the lattice",
@@ -131,6 +134,14 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [startupError]);
 
+  useVisibilityPolling(
+    () => {
+      void refreshSnapshot();
+    },
+    15_000,
+    true
+  );
+
   const formattedStartupError = formatStartupError(startupError);
 
   if (!snapshot || !splashReleased) {
@@ -181,6 +192,8 @@ export function App() {
           <Route path="/connectors" element={<ConnectorsPage />} />
           <Route path="/mcps" element={<McpsPage />} />
           <Route path="/agent" element={<AgentPage />} />
+          <Route path="/flow" element={<FlowPage />} />
+          <Route path="/browser" element={<BrowserPage />} />
           <Route path="/observability" element={<ObservabilityPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

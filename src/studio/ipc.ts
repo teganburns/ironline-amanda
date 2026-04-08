@@ -35,4 +35,12 @@ export const studioIpc = {
   listProcesses: "studio:list-processes",
   startProcess: "studio:start-process",
   stopProcess: "studio:stop-process",
+  quitApp: "studio:quit-app",
+  restartApp: "studio:restart-app",
+  rebuildAndRestart: "studio:rebuild-and-restart",
+  listFlowGraphs: "studio:list-flow-graphs",
+  getFlowGraph: "studio:get-flow-graph",
+  createFlowGraph: "studio:create-flow-graph",
+  updateFlowGraph: "studio:update-flow-graph",
+  deleteFlowGraph: "studio:delete-flow-graph",
 } as const;

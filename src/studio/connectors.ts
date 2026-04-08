@@ -64,17 +64,23 @@ export function createDefaultConnectors(mcpService: StudioMcpService): Connector
     createMcpBackedConnector(
       "context",
       "LanceDB Context MCP",
-      MCP_TARGET_IDS.remoteLanceDb,
+      MCP_TARGET_IDS.localContext,
       ["memory.search", "memory.store", "memory.delete"],
       mcpService
     ),
-    createPlaceholderConnector(
+    createMcpBackedConnector(
       "temporal",
-      "Temporal",
-      process.env.TEMPORAL_ADDRESS
-        ? `Configured for ${process.env.TEMPORAL_ADDRESS}`
-        : "Temporal config not present yet; jobs will fall back to local scheduling metadata.",
-      ["jobs.schedule", "jobs.retry", "jobs.resume"]
+      "Temporal Reminder MCP",
+      MCP_TARGET_IDS.localTemporal,
+      ["jobs.schedule", "jobs.retry", "jobs.remind"],
+      mcpService
+    ),
+    createMcpBackedConnector(
+      "browser",
+      "Browser MCP",
+      MCP_TARGET_IDS.localBrowser,
+      ["browser.navigate", "browser.snapshot", "browser.click", "browser.type", "browser.screenshot"],
+      mcpService
     ),
     createPlaceholderConnector(
       "gmail",

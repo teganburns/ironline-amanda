@@ -16,6 +16,14 @@ export function getAmandaMcpBaseUrl(): string {
   return readEnv("AMANDA_MCP_BASE_URL") ?? "https://mcp.ironline.app";
 }
 
+export function getTemporalLocalMcpUrl(): string {
+  return readEnv("TEMPORAL_MCP_URL") ?? "http://localhost:3002/temporal/mcp";
+}
+
+export function getBrowserLocalMcpUrl(): string {
+  return readEnv("BROWSER_MCP_URL") ?? "http://localhost:3003/browser/mcp";
+}
+
 export function getIMessageLocalMcpUrl(): string {
   return readEnv("IMESSAGE_MCP_URL") ?? readEnv("MCP_URL") ?? "http://localhost:3000/imessage/mcp";
 }
@@ -37,7 +45,6 @@ export function getAmandaLanceDbContextMcpUrl(): string | null {
   return (
     readEnv("AMANDA_LANCEDB_CONTEXT_MCP_URL") ??
     readEnv("AMANDA_LANCEDB_MCP_URL") ??
-    readEnv("AMANDA_CONTEXT_MCP_URL") ??
     null
   );
 }

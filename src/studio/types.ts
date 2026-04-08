@@ -9,6 +9,7 @@ export type McpTargetKind = "remote" | "local";
 export type McpTargetAuthMode = "env_bearer" | "auth_token" | "none";
 export type McpInvocationActionType = "tool" | "resource" | "prompt";
 export type McpProbeStage = "configuration" | "authentication" | "connect" | "ping" | "list_tools" | "required_tools";
+export type JobType = "reminder.send" | "agent.run" | string;
 
 export interface BridgeInfo {
   version: string;
@@ -109,11 +110,53 @@ export interface RetryPolicy {
   backoffSeconds: number;
 }
 
+export interface ReminderSourceChat {
+  chatId: string;
+  service: string;
+}
+
+export interface ReminderSender {
+  identifier: string;
+  name?: string | null;
+}
+
+export interface ReminderTarget {
+  recipient?: string;
+  chatId?: string;
+  service?: string;
+  summary?: string;
+}
+
+export interface ReminderJobPayload {
+  messageText: string;
+  requestedTime: string;
+  sourceChat: ReminderSourceChat;
+  sender: ReminderSender;
+  target: ReminderTarget;
+  timezone: string;
+}
+
+export interface AgentRunJobPayload {
+  channel: StudioChannel;
+  input: string;
+  context?: Record<string, unknown>;
+  messagePayload?: Record<string, unknown>;
+}
+
+export interface ReminderDeliveryOutcome {
+  ok: boolean;
+  deliveredAt?: string;
+  targetSummary: string;
+  rawResponse?: unknown;
+}
+
+export type JobPayload = ReminderJobPayload | AgentRunJobPayload | Record<string, unknown>;
+
 export interface JobSpec {
   id?: string;
-  jobType: string;
+  jobType: JobType;
   executeAt: string;
-  payload: Record<string, unknown>;
+  payload: JobPayload;
   retryPolicy?: RetryPolicy;
   dedupeKey?: string;
   status?: JobStatus;
@@ -126,6 +169,9 @@ export interface JobRecord extends JobSpec {
   updatedAt: string;
   backend: "temporal" | "local";
   lastError?: string;
+  completedAt?: string;
+  failureDetail?: string;
+  delivery?: ReminderDeliveryOutcome;
 }
 
 export interface ConnectorStatus {
@@ -293,4 +339,68 @@ export interface StudioConfigSnapshot {
   agents: AgentDefinition[];
   approvalRules: ApprovalRule[];
   langfuseBaseUrl?: string | null;
+}
+
+// ─── Flow Graph (Visual Pipeline Editor) ────────────────────────────────────
+
+export type FlowNodeType =
+  | "trigger"
+  | "classify"
+  | "context"
+  | "agent"
+  | "tool"
+  | "logic"
+  | "output";
+
+export interface FlowNodeData extends Record<string, unknown> {
+  label: string;
+  nodeType: FlowNodeType;
+  description?: string;
+  config?: Record<string, unknown>;
+  enabled?: boolean;
+}
+
+export interface FlowGraphNode {
+  id: string;
+  type: "amanda-flow-node";
+  position: { x: number; y: number };
+  data: FlowNodeData;
+}
+
+export interface FlowGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+  label?: string;
+  type?: "smoothstep" | "default" | "straight";
+  animated?: boolean;
+}
+
+export interface FlowGraph {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+  nodes: FlowGraphNode[];
+  edges: FlowGraphEdge[];
+}
+
+export interface FlowGraphDocument {
+  graphs: FlowGraph[];
+  activeGraphId: string | null;
+}
+
+export interface FlowGraphInput {
+  name: string;
+  description?: string;
+}
+
+export interface FlowGraphPatch {
+  name?: string;
+  description?: string;
+  nodes?: FlowGraphNode[];
+  edges?: FlowGraphEdge[];
 }

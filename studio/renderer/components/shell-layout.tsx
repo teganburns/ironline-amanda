@@ -7,16 +7,28 @@ import { NavIcon } from "./nav-icon";
 
 export function ShellLayout({ shell }: { shell: ShellContextValue }) {
   const [navExpanded, setNavExpanded] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
+
+  async function handleRebuildAndRestart() {
+    setRebuilding(true);
+    try {
+      await window.ironlineStudio.rebuildAndRestart();
+    } catch {
+      setRebuilding(false);
+    }
+  }
   const location = useLocation();
   const navigate = useNavigate();
+  const isFlowRoute = location.pathname === "/flow";
   const readyConnectors = shell.snapshot.connectors.filter((connector) => connector.status.state === "ready").length;
+  const activeJobs = shell.snapshot.jobs.filter((job) => job.status === "scheduled" || job.status === "running").length;
   const backNavigation =
     typeof window === "undefined" ? null : resolveBackNavigation(location.pathname, window.history.state);
   const topbarMeta = shell.startupError
     ? `Sync issue: ${shell.startupError}`
     : shell.snapshotBusy
     ? "Refreshing studio data..."
-    : `${readyConnectors} connectors ready • ${shell.snapshot.jobs.length} jobs • ${shell.snapshot.recentRuns.length} recent runs`;
+    : `${readyConnectors} connectors ready • ${activeJobs} active jobs • ${shell.snapshot.recentRuns.length} recent runs`;
 
   function handleBack() {
     if (!backNavigation) return;
@@ -30,7 +42,7 @@ export function ShellLayout({ shell }: { shell: ShellContextValue }) {
   }
 
   return (
-    <main className={`shell${navExpanded ? " shell-expanded" : ""}`}>
+    <main className={`shell${navExpanded ? " shell-expanded" : ""}${isFlowRoute ? " shell-flow" : ""}`}>
       <header className="topbar">
         <div className="topbar-main">
           {backNavigation ? (
@@ -76,11 +88,23 @@ export function ShellLayout({ shell }: { shell: ShellContextValue }) {
             <span className="nav-icon-shell refresh-icon">↻</span>
             <span className="refresh-copy">{shell.snapshotBusy ? "Refreshing..." : "Refresh Snapshot"}</span>
           </button>
+          <button className="refresh" onClick={() => void window.ironlineStudio.restartApp()} title="Restart app">
+            <span className="nav-icon-shell">⟳</span>
+            <span className="refresh-copy">Restart</span>
+          </button>
+          <button className="refresh" onClick={() => void handleRebuildAndRestart()} disabled={rebuilding} title="Rebuild renderer and restart">
+            <span className="nav-icon-shell">⚙</span>
+            <span className="refresh-copy">{rebuilding ? "Building…" : "Rebuild"}</span>
+          </button>
+          <button className="refresh rail-quit" onClick={() => void window.ironlineStudio.quitApp()} title="Quit app">
+            <span className="nav-icon-shell">✕</span>
+            <span className="refresh-copy">Quit</span>
+          </button>
         </div>
       </aside>
 
-      <section className="content">
-        <div className="content-inner">
+      <section className={`content${isFlowRoute ? " content-flow" : ""}`}>
+        <div className={`content-inner${isFlowRoute ? " content-inner-flow" : ""}`}>
           <Outlet context={shell} />
         </div>
       </section>

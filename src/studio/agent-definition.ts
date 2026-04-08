@@ -17,6 +17,12 @@ export function getDefaultAgentDefinition(): AgentDefinition {
       "memory_search",
       "memory_store",
       "memory_delete",
+      "schedule_reminder",
+      "browser_navigate",
+      "browser_screenshot",
+      "browser_snapshot",
+      "browser_click",
+      "browser_type",
     ],
     defaultApprovalMode: "autonomous",
   };

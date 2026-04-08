@@ -1,10 +1,11 @@
 import { Link } from "react-router-dom";
 import { useShellContext } from "../context";
-import { EmptyState, PageHeader, StatusPill } from "../components/ui";
+import { CompactListRow, EmptyState, PageHeader, StatusPill } from "../components/ui";
 
 export function OverviewPage() {
   const { snapshot } = useShellContext();
   const readyConnectors = snapshot.connectors.filter((connector) => connector.status.state === "ready").length;
+  const activeJobs = snapshot.jobs.filter((job) => job.status === "scheduled" || job.status === "running").length;
 
   return (
     <div className="page-stack">
@@ -19,7 +20,7 @@ export function OverviewPage() {
         </div>
         <div className="hero-card">
           <span>{readyConnectors} connectors ready</span>
-          <span>{snapshot.jobs.length} jobs tracked</span>
+          <span>{activeJobs} active jobs</span>
           <span>{snapshot.recentRuns.length} recent runs</span>
         </div>
       </section>
@@ -98,13 +99,20 @@ export function OverviewPage() {
               View all
             </Link>
           </div>
-          <div className="list">
+          <div className="compact-list">
             {snapshot.recentRuns.length ? (
               snapshot.recentRuns.slice(0, 5).map((run) => (
-                <Link className="run-card card-link" key={run.id} to={`/runs/${run.id}`}>
-                  <span>{run.request.input || "Untitled run"}</span>
-                  <small>{new Date(run.startedAt).toLocaleString()}</small>
-                </Link>
+                <CompactListRow
+                  key={run.id}
+                  title={
+                    <Link className="compact-row-link" to={`/runs/${run.id}`}>
+                      {run.request.input || "Untitled run"}
+                    </Link>
+                  }
+                  meta={run.promptSource?.variantName ?? "Unknown variant"}
+                  status={run.status}
+                  time={run.startedAt}
+                />
               ))
             ) : (
               <EmptyState message="No runs have been captured yet." />
@@ -122,14 +130,22 @@ export function OverviewPage() {
               View all
             </Link>
           </div>
-          <div className="list">
+          <div className="compact-list">
             {snapshot.jobs.length ? (
               snapshot.jobs.slice(0, 5).map((job) => (
-                <Link className="job-card card-link" key={job.id} to={`/jobs/${job.id}`}>
-                  <strong>{job.jobType}</strong>
-                  <span>{job.backend}</span>
-                  <small>{new Date(job.executeAt).toLocaleString()}</small>
-                </Link>
+                <CompactListRow
+                  key={job.id}
+                  title={
+                    <Link className="compact-row-link" to={`/jobs/${job.id}`}>
+                      {job.jobType === "reminder.send" && "messageText" in job.payload
+                        ? job.payload.messageText
+                        : job.jobType}
+                    </Link>
+                  }
+                  meta={job.backend}
+                  status={job.status}
+                  time={job.executeAt}
+                />
               ))
             ) : (
               <EmptyState message="No jobs have been scheduled yet." />

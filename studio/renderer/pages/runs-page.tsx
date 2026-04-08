@@ -5,7 +5,8 @@ import { useShellContext } from "../context";
 import { studioClient } from "../client";
 import { defaultRunRequest } from "../defaults";
 import { useAsyncData } from "../hooks/use-async-data";
-import { EmptyState, LoadingCopy, PageHeader, StatusPill } from "../components/ui";
+import { CompactListRow, EmptyState, LiveTimestamp, LoadingCopy, PageHeader } from "../components/ui";
+import { truncateMiddle } from "../time";
 
 export function RunsPage() {
   const navigate = useNavigate();
@@ -13,7 +14,9 @@ export function RunsPage() {
   const [runRequest, setRunRequest] = useState<RunRequest>(defaultRunRequest);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const { data: runs, loading, error, reload } = useAsyncData(() => studioClient.listRuns(30), []);
+  const { data: runs, loading, error, reload } = useAsyncData(() => studioClient.listRuns(30), [], {
+    pollMs: 10_000,
+  });
 
   async function submitRun() {
     try {
@@ -36,10 +39,26 @@ export function RunsPage() {
         eyebrow="Runs"
         title="Manual execution workspace"
         description="Launch new runs, review recent history, and jump into detailed traces."
-        actions={<button onClick={submitRun}>{submitting ? "Running..." : "Run Agent"}</button>}
+        actions={<button onClick={submitRun} disabled={submitting}>{submitting ? "Running…" : "Run Agent"}</button>}
       />
 
-      {submitError ? <p className="empty">Run launch issue: {submitError}</p> : null}
+      {submitting ? (
+        <div className="run-in-progress">
+          <div className="run-in-progress-pulse" />
+          <span>Amanda is working…</span>
+        </div>
+      ) : null}
+
+      {submitError ? (
+        <div className="run-error-banner">
+          <strong>Run failed</strong>
+          <p>
+            {submitError.includes("required MCPs are not ready") || submitError.includes("MCP")
+              ? "Amanda can't reach a required service. Check that context-mcp is running (bun run context-mcp:start), then restart the Studio."
+              : submitError}
+          </p>
+        </div>
+      ) : null}
 
       <section className="grid two-up">
         <article className="panel">
@@ -117,7 +136,12 @@ export function RunsPage() {
             <div className="definition-card">
               <strong>Latest run</strong>
               <span>{snapshot.recentRuns[0].request.input || "Untitled run"}</span>
-              <p>{snapshot.recentRuns[0].traceId ?? "No Langfuse trace on the latest run."}</p>
+              <p>
+                {snapshot.recentRuns[0].traceId ? truncateMiddle(snapshot.recentRuns[0].traceId) : "No Langfuse trace on the latest run."}
+              </p>
+              <small>
+                <LiveTimestamp value={snapshot.recentRuns[0].startedAt} />
+              </small>
               <Link className="quick-link subtle-link" to={`/runs/${snapshot.recentRuns[0].id}`}>
                 Open latest run
               </Link>
@@ -135,18 +159,22 @@ export function RunsPage() {
             <h3>Recent runs</h3>
           </div>
         </div>
-        <div className="list">
+        <div className="compact-list">
           {loading ? <LoadingCopy /> : null}
           {error ? <p className="empty">Run history issue: {error}</p> : null}
           {!loading && !error && !runs?.length ? <EmptyState message="No runs available yet." /> : null}
           {runs?.map((run) => (
-            <Link className="run-card card-link" key={run.id} to={`/runs/${run.id}`}>
-              <div className="panel-row">
-                <span>{run.request.input || "Untitled run"}</span>
-                <StatusPill value={run.status} />
-              </div>
-              <small>{new Date(run.startedAt).toLocaleString()}</small>
-            </Link>
+            <CompactListRow
+              key={run.id}
+              title={
+                <Link className="compact-row-link" to={`/runs/${run.id}`}>
+                  {run.request.input || "Untitled run"}
+                </Link>
+              }
+              meta={`${run.promptSource?.variantName ?? "Unknown variant"}${run.traceId ? ` • ${truncateMiddle(run.traceId)}` : ""}`}
+              status={run.status}
+              time={run.startedAt}
+            />
           ))}
         </div>
       </article>

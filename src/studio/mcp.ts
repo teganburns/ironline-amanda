@@ -1,13 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport, StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
+  getBrowserLocalMcpUrl,
   getAmandaIMessageMcpUrl,
-  getAmandaLanceDbContextBearer,
-  getAmandaLanceDbContextMcpUrl,
   getAmandaMcpToken,
   getIMessageLocalMcpUrl,
+  getLanceDbContextLocalMcpUrl,
+  getTemporalLocalMcpUrl,
 } from "../mcp-endpoints";
 import { formatJsonDocument } from "./json";
+import { probeTemporalRuntime, type TemporalProbeResult } from "./temporal";
 import type {
   ConnectorState,
   ConnectorStatus,
@@ -22,7 +24,10 @@ import type {
 
 export const MCP_TARGET_IDS = {
   remoteLanceDb: "amanda-lancedb",
+  localBrowser: "browser-local",
+  localContext: "context-local",
   localIMessage: "imessage-local",
+  localTemporal: "temporal-local",
   remoteIMessage: "amanda-imessage",
 } as const;
 
@@ -51,6 +56,14 @@ type McpSessionFactory = (
   requestInit: RequestInit
 ) => Promise<McpSession>;
 
+interface BrowserProbeResult {
+  connected: boolean;
+  detail: string;
+  lastConnectedAt: string | null;
+  pendingCommandCount: number;
+  lastError: string | null;
+}
+
 function status(state: ConnectorState, detail: string): ConnectorStatus {
   return {
     state,
@@ -72,8 +85,8 @@ function listEnvNames(names: string[]): string {
 }
 
 function getMissingConfigMessage(target: McpTargetDefinition): string {
-  if (target.id === MCP_TARGET_IDS.remoteLanceDb) {
-    return "Set AMANDA_LANCEDB_CONTEXT_MCP_URL to enable the remote LanceDB Context MCP.";
+  if (target.id === MCP_TARGET_IDS.localTemporal) {
+    return "Set TEMPORAL_ADDRESS, TEMPORAL_NAMESPACE, and TEMPORAL_TASK_QUEUE to enable the Temporal reminder lane.";
   }
 
   return `${target.label} is not configured.`;
@@ -119,6 +132,43 @@ function classifyProbeError(
 
 function resolveRemoteIMessageAuthToken(): string | undefined {
   return process.env.AMANDA_MCP_TOKEN?.trim() || getAmandaMcpToken();
+}
+
+async function probeBrowserRuntime(target: McpTargetDefinition, requestInit: RequestInit): Promise<BrowserProbeResult> {
+  if (!target.baseUrl) {
+    throw new Error(`${target.label} has no configured base URL.`);
+  }
+
+  const response = await fetch(new URL("/browser/status", target.baseUrl), {
+    method: "GET",
+    headers: requestInit.headers,
+    signal: AbortSignal.timeout(1_500),
+  });
+
+  if (!response.ok) {
+    throw new StreamableHTTPError(response.status, `Browser status probe failed with HTTP ${response.status}`);
+  }
+
+  const payload = (await response.json()) as {
+    connected?: unknown;
+    lastConnectedAt?: unknown;
+    pendingCommandCount?: unknown;
+    lastError?: unknown;
+  };
+
+  const connected = payload.connected === true;
+  const lastError = typeof payload.lastError === "string" ? payload.lastError : null;
+
+  return {
+    connected,
+    detail: connected
+      ? "Chrome extension is connected to the local browser bridge."
+      : lastError ?? "Chrome extension is not currently connected to the local browser bridge.",
+    lastConnectedAt: typeof payload.lastConnectedAt === "string" ? payload.lastConnectedAt : null,
+    pendingCommandCount:
+      typeof payload.pendingCommandCount === "number" ? payload.pendingCommandCount : 0,
+    lastError,
+  };
 }
 
 function createSdkSessionFactory(): McpSessionFactory {
@@ -218,22 +268,42 @@ function createSdkSessionFactory(): McpSessionFactory {
 }
 
 export function createDefaultMcpTargets(): McpTargetDefinition[] {
-  const remoteLanceDbUrl = getAmandaLanceDbContextMcpUrl();
-
   return [
     {
-      id: MCP_TARGET_IDS.remoteLanceDb,
-      label: "Amanda LanceDB Context MCP",
-      kind: "remote",
-      baseUrl: remoteLanceDbUrl,
-      configured: Boolean(remoteLanceDbUrl),
-      authMode: "env_bearer",
+      id: MCP_TARGET_IDS.localBrowser,
+      label: "Local Browser MCP",
+      kind: "local",
+      baseUrl: getBrowserLocalMcpUrl(),
+      configured: true,
+      authMode: "auth_token",
       auth: {
         kind: "bearer",
         headerName: "Authorization",
-        envVarNames: ["LANCE_DB_DEFAULT_API_KEY"],
+        envVarNames: ["AUTH_TOKEN"],
       },
-      capabilities: ["tools.list", "tools.call", "resources.list", "resources.read", "prompts.list"],
+      capabilities: ["tools.list", "tools.call"],
+      requiredTools: [
+        "browser_navigate",
+        "browser_screenshot",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+      ],
+      requiredForRuntime: false,
+    },
+    {
+      id: MCP_TARGET_IDS.localContext,
+      label: "LanceDB Context MCP",
+      kind: "local",
+      baseUrl: getLanceDbContextLocalMcpUrl(),
+      configured: true,
+      authMode: "auth_token",
+      auth: {
+        kind: "bearer",
+        headerName: "Authorization",
+        envVarNames: ["AUTH_TOKEN"],
+      },
+      capabilities: ["tools.list", "tools.call"],
       requiredTools: ["memory_store", "memory_search", "memory_get_user", "memory_delete"],
       requiredForRuntime: true,
     },
@@ -252,6 +322,22 @@ export function createDefaultMcpTargets(): McpTargetDefinition[] {
       capabilities: ["tools.list", "tools.call", "resources.list", "prompts.list"],
       requiredTools: ["send_message", "get_messages", "search_messages"],
       requiredForRuntime: true,
+    },
+    {
+      id: MCP_TARGET_IDS.localTemporal,
+      label: "Local Temporal Reminder MCP",
+      kind: "local",
+      baseUrl: getTemporalLocalMcpUrl(),
+      configured: true,
+      authMode: "auth_token",
+      auth: {
+        kind: "bearer",
+        headerName: "Authorization",
+        envVarNames: ["AUTH_TOKEN"],
+      },
+      capabilities: ["tools.list", "tools.call"],
+      requiredTools: ["schedule_reminder"],
+      requiredForRuntime: false,
     },
     {
       id: MCP_TARGET_IDS.remoteIMessage,
@@ -279,9 +365,7 @@ export function resolveMcpTargetRequestInit(target: McpTargetDefinition): {
   const headers: Record<string, string> = {};
   let token: string | undefined;
 
-  if (target.id === MCP_TARGET_IDS.remoteLanceDb) {
-    token = getAmandaLanceDbContextBearer();
-  } else if (target.id === MCP_TARGET_IDS.remoteIMessage) {
+  if (target.id === MCP_TARGET_IDS.remoteIMessage) {
     token = resolveRemoteIMessageAuthToken();
   } else if (target.auth.kind === "bearer") {
     token = firstPresentEnv(target.auth.envVarNames);
@@ -302,7 +386,12 @@ export function resolveMcpTargetRequestInit(target: McpTargetDefinition): {
 export class StudioMcpService {
   constructor(
     private readonly targets: McpTargetDefinition[] = createDefaultMcpTargets(),
-    private readonly sessionFactory: McpSessionFactory = createSdkSessionFactory()
+    private readonly sessionFactory: McpSessionFactory = createSdkSessionFactory(),
+    private readonly temporalProbe: () => Promise<TemporalProbeResult> = probeTemporalRuntime,
+    private readonly browserProbe: (
+      target: McpTargetDefinition,
+      requestInit: RequestInit
+    ) => Promise<BrowserProbeResult> = probeBrowserRuntime
   ) {}
 
   listTargets(): McpTargetDefinition[] {
@@ -448,6 +537,101 @@ export class StudioMcpService {
           availableTools,
           missingRequiredTools,
           failedStage: "required_tools",
+          serverVersion: session.getServerVersion(),
+          instructions: session.getInstructions(),
+          serverCapabilities: session.getServerCapabilities(),
+        };
+      }
+
+      if (target.id === MCP_TARGET_IDS.localBrowser) {
+        let browserProbe: BrowserProbeResult;
+        try {
+          browserProbe = await this.browserProbe(target, requestInit);
+        } catch (error) {
+          const failure = classifyProbeError(error, target, "connect");
+          return {
+            target,
+            status: status(failure.state, failure.detail),
+            configured: true,
+            authConfigured,
+            availableTools,
+            missingRequiredTools: [],
+            failedStage: failure.failedStage,
+            serverVersion: session.getServerVersion(),
+            instructions: session.getInstructions(),
+            serverCapabilities: session.getServerCapabilities(),
+          };
+        }
+
+        if (!browserProbe.connected) {
+          return {
+            target,
+            status: status("degraded", browserProbe.detail),
+            configured: true,
+            authConfigured,
+            availableTools,
+            missingRequiredTools: [],
+            failedStage: "connect",
+            serverVersion: session.getServerVersion(),
+            instructions: session.getInstructions(),
+            serverCapabilities: session.getServerCapabilities(),
+          };
+        }
+
+        return {
+          target,
+          status: status("ready", `${target.label} is ready. ${browserProbe.detail}`),
+          configured: true,
+          authConfigured,
+          availableTools,
+          missingRequiredTools: [],
+          failedStage: null,
+          serverVersion: session.getServerVersion(),
+          instructions: session.getInstructions(),
+          serverCapabilities: session.getServerCapabilities(),
+        };
+      }
+
+      if (target.id === MCP_TARGET_IDS.localTemporal) {
+        const temporalProbe = await this.temporalProbe();
+        if (!temporalProbe.configured) {
+          return {
+            target,
+            status: status("degraded", temporalProbe.detail),
+            configured: false,
+            authConfigured,
+            availableTools,
+            missingRequiredTools: [],
+            failedStage: "configuration",
+            serverVersion: session.getServerVersion(),
+            instructions: session.getInstructions(),
+            serverCapabilities: session.getServerCapabilities(),
+          };
+        }
+
+        if (!temporalProbe.reachable) {
+          return {
+            target,
+            status: status("offline", temporalProbe.detail),
+            configured: true,
+            authConfigured,
+            availableTools,
+            missingRequiredTools: [],
+            failedStage: "connect",
+            serverVersion: session.getServerVersion(),
+            instructions: session.getInstructions(),
+            serverCapabilities: session.getServerCapabilities(),
+          };
+        }
+
+        return {
+          target,
+          status: status("ready", `${target.label} is ready. ${temporalProbe.detail}`),
+          configured: true,
+          authConfigured,
+          availableTools,
+          missingRequiredTools: [],
+          failedStage: null,
           serverVersion: session.getServerVersion(),
           instructions: session.getInstructions(),
           serverCapabilities: session.getServerCapabilities(),

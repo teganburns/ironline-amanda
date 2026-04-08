@@ -20,14 +20,21 @@ import { homedir, tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getMessages } from "./db.js";
 import { loadProjectEnv } from "./env";
-import { getAmandaLanceDbContextBearer, getAmandaLanceDbContextMcpUrl, getIMessageLocalMcpUrl } from "./mcp-endpoints";
+import {
+  getBrowserLocalMcpUrl,
+  getIMessageLocalMcpUrl,
+  getLanceDbContextLocalMcpUrl,
+  getTemporalLocalMcpUrl,
+} from "./mcp-endpoints";
 import { compilePublishedPromptGraph } from "./studio/prompt-graphs";
 import type { ArtifactRecord, RunPromptSource, RunRequest, RunResult, TimelineEvent, ToolEvent } from "./studio/types";
 
 loadProjectEnv();
 
 const MCP_URL = getIMessageLocalMcpUrl();
-const CONTEXT_MCP_URL = getAmandaLanceDbContextMcpUrl();
+const CONTEXT_MCP_URL = getLanceDbContextLocalMcpUrl();
+const TEMPORAL_MCP_URL = getTemporalLocalMcpUrl();
+const BROWSER_MCP_URL = getBrowserLocalMcpUrl();
 
 const TRIAGE_MODEL = "gpt-5.4-nano";
 const STANDARD_MODEL = process.env.STANDARD_MODEL ?? "gpt-5.4";
@@ -90,11 +97,6 @@ function getOpenAIKey(): string {
   return apiKey;
 }
 
-function getContextMcpBearer(): string {
-  const token = getAmandaLanceDbContextBearer();
-  if (!token) throw new Error("LANCE_DB_DEFAULT_API_KEY env var is required for the remote LanceDB Context MCP");
-  return token;
-}
 
 function getLangfuse(): Langfuse {
   if (!langfuseClient) {
@@ -137,7 +139,6 @@ export async function callAgent(
   promptExecutionOptions: PromptExecutionOptions = {}
 ): Promise<RunResult> {
   const AUTH_TOKEN = getAuthToken();
-  const CONTEXT_MCP_BEARER = getContextMcpBearer();
   const OPENAI_API_KEY = getOpenAIKey();
   setDefaultOpenAIKey(OPENAI_API_KEY);
   const langfuse = getLangfuse();
@@ -169,10 +170,6 @@ export async function callAgent(
     replayOfRunId: request.replayOfRunId,
   };
   const promptExecution = resolvePromptExecution(normalizedRequest.agentId ?? "amanda-core", promptExecutionOptions);
-
-  if (!CONTEXT_MCP_URL) {
-    throw new Error("AMANDA_LANCEDB_CONTEXT_MCP_URL env var is required for Amanda's remote LanceDB Context MCP.");
-  }
 
   const trace = langfuse.trace({
     name:     "amanda-message",
@@ -222,14 +219,59 @@ export async function callAgent(
   const contextMcpServer = new MCPServerStreamableHttp({
     name: "context",
     url: CONTEXT_MCP_URL,
-    requestInit: { headers: { Authorization: `Bearer ${CONTEXT_MCP_BEARER}` } },
+    requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } },
   });
+
+  const temporalMcpServer = new MCPServerStreamableHttp({
+    name: "temporal",
+    url: TEMPORAL_MCP_URL,
+    requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } },
+  });
+  const browserMcpServer = new MCPServerStreamableHttp({
+    name: "browser",
+    url: BROWSER_MCP_URL,
+    requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } },
+  });
+  const activeMcpServers = [mcpServer, contextMcpServer];
 
   try {
     await mcpServer.connect();
     await contextMcpServer.connect();
-    timeline.push(timelineEvent("connector", "mcp.connected", "Connected iMessage and context MCP servers"));
-
+    timeline.push(
+      timelineEvent("connector", "mcp.connected", "Connected iMessage and context MCP servers")
+    );
+    try {
+      await temporalMcpServer.connect();
+      activeMcpServers.push(temporalMcpServer);
+      timeline.push(
+        timelineEvent("connector", "mcp.connected", "Connected Temporal MCP server")
+      );
+    } catch (temporalError) {
+      timeline.push(
+        timelineEvent(
+          "connector",
+          "mcp.degraded",
+          "Temporal MCP was unavailable, so reminder scheduling tools are currently offline.",
+          temporalError instanceof Error ? temporalError.message : String(temporalError)
+        )
+      );
+    }
+    try {
+      await browserMcpServer.connect();
+      activeMcpServers.push(browserMcpServer);
+      timeline.push(
+        timelineEvent("connector", "mcp.connected", "Connected Browser MCP server")
+      );
+    } catch (browserError) {
+      timeline.push(
+        timelineEvent(
+          "connector",
+          "mcp.degraded",
+          "Browser MCP was unavailable, so browser navigation tools are currently offline.",
+          browserError instanceof Error ? browserError.message : String(browserError)
+        )
+      );
+    }
     // ── Triage ────────────────────────────────────────────────────────────────
     const classification = await classifyMessage(payload, history, trace);
     console.log(`[agent] tier: ${classification.tier}`);
@@ -402,7 +444,7 @@ export async function callAgent(
       name: "Amanda",
       model,
       instructions: promptExecution.compiledInstructions,
-      mcpServers: [mcpServer, contextMcpServer],
+      mcpServers: activeMcpServers,
     });
 
     const agentSpan = trace.span({
@@ -440,7 +482,8 @@ export async function callAgent(
     const sentMessage = toolCalls.some((t) =>
       ["send_message", "send_image", "send_file"].includes(t)
     );
-    if (!sentMessage && classification.tier !== "no_reply") {
+    const completedSilentReminder = toolCalls.includes("schedule_reminder");
+    if (!sentMessage && !completedSilentReminder && classification.tier !== "no_reply") {
       console.warn(`[agent] warning — completed without calling send_message`);
       timeline.push(
         timelineEvent("runtime", "reply.missing", "Run completed without an outbound send tool call")
@@ -498,6 +541,8 @@ export async function callAgent(
   } finally {
     await mcpServer.close().catch(() => {});
     await contextMcpServer.close().catch(() => {});
+    await temporalMcpServer.close().catch(() => {});
+    await browserMcpServer.close().catch(() => {});
     await langfuse.flushAsync();
     console.log(`[agent] langfuse flushed — trace: ${trace.id}`);
   }
@@ -622,13 +667,13 @@ async function classifyMessage(
 
 function getModelConfig(tier: MessageTier): { model: string; maxTurns: number } {
   switch (tier) {
-    case "banter":     return { model: TRIAGE_MODEL,    maxTurns: 3 };
-    case "question":   return { model: STANDARD_MODEL,  maxTurns: 5 };
-    case "reasoning":  return { model: STANDARD_MODEL,  maxTurns: 7 };
+    case "banter":     return { model: TRIAGE_MODEL,    maxTurns: 8 };
+    case "question":   return { model: STANDARD_MODEL,  maxTurns: 10 };
+    case "reasoning":  return { model: STANDARD_MODEL,  maxTurns: 15 };
     case "complex":
     case "correction":
-    case "image":      return { model: REASONING_MODEL, maxTurns: 7 };
-    default:           return { model: TRIAGE_MODEL,    maxTurns: 3  };
+    case "image":      return { model: REASONING_MODEL, maxTurns: 15 };
+    default:           return { model: TRIAGE_MODEL,    maxTurns: 8  };
   }
 }
 
@@ -740,7 +785,9 @@ export function formatInput(
     `Service: ${payload.service}`,
     `Type: ${payload.message_type}`,
     `Chat ID: ${payload.chat_id}`,
+    `Current time (ISO 8601): ${new Date().toISOString()}`,
     `Current time (Unix epoch ms): ${Date.now()}`,
+    `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Los_Angeles"}`,
   ];
 
   if (history.length > 0) {

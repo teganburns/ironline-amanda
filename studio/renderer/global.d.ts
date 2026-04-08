@@ -66,6 +66,9 @@ declare global {
       listProcesses(): Promise<unknown>;
       startProcess(id: string): Promise<unknown>;
       stopProcess(id: string): Promise<unknown>;
+      quitApp(): Promise<void>;
+      restartApp(): Promise<void>;
+      rebuildAndRestart(): Promise<void>;
     };
   }
 }

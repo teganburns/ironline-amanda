@@ -83,11 +83,15 @@ export function ConnectorsPage() {
               <div key={process.id} className="connector-card">
                 <div className="process-header">
                   <strong>{process.id}</strong>
-                  <button onClick={() => void toggleProcess(process.id, process.running)}>
-                    {process.running ? "Stop" : "Start"}
-                  </button>
+                  {process.externallyRunning ? (
+                    <span className="process-external-note">Managed by LaunchAgent</span>
+                  ) : (
+                    <button onClick={() => void toggleProcess(process.id, process.running)}>
+                      {process.running ? "Stop" : "Start"}
+                    </button>
+                  )}
                 </div>
-                <StatusPill value={process.running ? "ready" : "offline"} />
+                <StatusPill value={process.running ? "ready" : process.externallyRunning ? "external" : "offline"} />
                 <small>{process.command}</small>
                 <p>{process.cwd}</p>
               </div>

@@ -25,6 +25,11 @@ function errorResponse(error: any) {
   return json({ error: message, code, issues }, status);
 }
 
+process.on("SIGTERM", () => {
+  processManager.stopAll();
+  process.exit(0);
+});
+
 const server = Bun.serve({
   port: PORT,
   async fetch(request) {
@@ -67,6 +72,15 @@ const server = Bun.serve({
         return json(await control.listMcpPrompts(targetId));
       }
 
+      if (request.method === "GET" && url.pathname === "/flow-graphs") {
+        return json(await control.listFlowGraphs());
+      }
+
+      if (request.method === "GET" && url.pathname.startsWith("/flow-graphs/")) {
+        const graphId = url.pathname.split("/").at(-1) ?? "";
+        return json(await control.getFlowGraph(graphId));
+      }
+
       if (request.method === "GET" && url.pathname === "/prompt-graphs") {
         return json(await control.listPromptGraphVariants());
       }
@@ -101,7 +115,7 @@ const server = Bun.serve({
       }
 
       if (request.method === "GET" && url.pathname === "/processes") {
-        return json(processManager.list());
+        return json(await processManager.listWithHealth());
       }
 
       if (request.method === "GET" && url.pathname.startsWith("/run-timeline/")) {
@@ -138,6 +152,20 @@ const server = Bun.serve({
         const targetId = url.pathname.split("/")[3] ?? "";
         const payload = await readJson<{ name: string; args?: Record<string, unknown> }>(request);
         return json(await control.invokeMcpTool(targetId, payload.name, payload.args));
+      }
+
+      if (request.method === "POST" && url.pathname === "/flow-graphs") {
+        return json(await control.createFlowGraph(await readJson(request)));
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/flow-graphs/") && url.pathname.endsWith("/delete")) {
+        const graphId = url.pathname.split("/")[2] ?? "";
+        return json(await control.deleteFlowGraph(graphId));
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/flow-graphs/")) {
+        const graphId = url.pathname.split("/")[2] ?? "";
+        return json(await control.updateFlowGraph(graphId, await readJson(request)));
       }
 
       if (request.method === "POST" && url.pathname === "/prompt-graphs") {

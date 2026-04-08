@@ -9,12 +9,24 @@ import { getBunBinary } from "../src/studio/bun-path";
 
 const { app, BrowserWindow, ipcMain } = electron;
 
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+  });
+}
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, "..", "..");
 
 loadProjectEnv(rootDir);
 const explicitStudioServerPort = process.env.STUDIO_SERVER_PORT ? Number(process.env.STUDIO_SERVER_PORT) : null;
-const AUTO_START_PROCESS_IDS = ["imessage", "temporal-worker"] as const;
+const AUTO_START_PROCESS_IDS = ["imessage", "browser", "temporal-mcp", "temporal-worker"] as const;
 let studioServer: ChildProcessWithoutNullStreams | null = null;
 let studioServerPort: number | null = explicitStudioServerPort;
 let studioServerReadyPromise: Promise<number> | null = null;
@@ -274,6 +286,26 @@ ipcMain.handle(studioIpc.getRunTimeline, async (_event, runId: string) => bridge
 ipcMain.handle(studioIpc.listProcesses, async () => bridge("/processes"));
 ipcMain.handle(studioIpc.startProcess, async (_event, id: string) => bridge(`/processes/${id}/start`, {}));
 ipcMain.handle(studioIpc.stopProcess, async (_event, id: string) => bridge(`/processes/${id}/stop`, {}));
+ipcMain.handle(studioIpc.quitApp, () => { app.quit(); });
+ipcMain.handle(studioIpc.restartApp, () => { app.relaunch(); app.quit(); });
+ipcMain.handle(studioIpc.rebuildAndRestart, async () => {
+  const bunBinary = getBunBinary();
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn(bunBinary, ["scripts/build-studio.ts"], { cwd: rootDir, stdio: "pipe" });
+    proc.on("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Build failed with exit code ${code}`));
+    });
+    proc.on("error", reject);
+  });
+  app.relaunch();
+  app.quit();
+});
+ipcMain.handle(studioIpc.listFlowGraphs, async () => bridge("/flow-graphs"));
+ipcMain.handle(studioIpc.getFlowGraph, async (_event, id: string) => bridge(`/flow-graphs/${id}`));
+ipcMain.handle(studioIpc.createFlowGraph, async (_event, input) => bridge("/flow-graphs", input));
+ipcMain.handle(studioIpc.updateFlowGraph, async (_event, id: string, patch) => bridge(`/flow-graphs/${id}`, patch));
+ipcMain.handle(studioIpc.deleteFlowGraph, async (_event, id: string) => bridge(`/flow-graphs/${id}/delete`, {}));
 
 app.whenReady().then(() => {
   createWindow();

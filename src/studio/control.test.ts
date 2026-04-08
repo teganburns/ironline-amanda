@@ -8,6 +8,9 @@ import type { ConnectorAdapter, RunResult } from "./types";
 
 const originalStudioHome = process.env.IRONLINE_HOME_DIR;
 const originalPromptGraphRoot = process.env.IRONLINE_PROMPT_GRAPH_ROOT_DIR;
+const originalTemporalAddress = process.env.TEMPORAL_ADDRESS;
+const originalTemporalNamespace = process.env.TEMPORAL_NAMESPACE;
+const originalTemporalTaskQueue = process.env.TEMPORAL_TASK_QUEUE;
 
 function createResult(input: string): RunResult {
   return {
@@ -90,6 +93,9 @@ describe("IronlineStudioControl", () => {
   beforeEach(() => {
     process.env.IRONLINE_HOME_DIR = `/tmp/ironline-control-test-${Date.now()}`;
     process.env.IRONLINE_PROMPT_GRAPH_ROOT_DIR = `/tmp/ironline-control-prompts-${Date.now()}`;
+    process.env.TEMPORAL_ADDRESS = "";
+    process.env.TEMPORAL_NAMESPACE = "";
+    process.env.TEMPORAL_TASK_QUEUE = "";
   });
 
   afterEach(() => {
@@ -97,6 +103,9 @@ describe("IronlineStudioControl", () => {
     rmSync(process.env.IRONLINE_PROMPT_GRAPH_ROOT_DIR!, { recursive: true, force: true });
     process.env.IRONLINE_HOME_DIR = originalStudioHome;
     process.env.IRONLINE_PROMPT_GRAPH_ROOT_DIR = originalPromptGraphRoot;
+    process.env.TEMPORAL_ADDRESS = originalTemporalAddress;
+    process.env.TEMPORAL_NAMESPACE = originalTemporalNamespace;
+    process.env.TEMPORAL_TASK_QUEUE = originalTemporalTaskQueue;
   });
 
   test("runs agent through injected executor and stores result", async () => {
@@ -235,6 +244,39 @@ describe("IronlineStudioControl", () => {
     expect(live.promptSource?.variantId).not.toBe(sandboxVariant.id);
     expect(capturedInstructions[0]).toContain("sandbox instructions");
     expect(capturedInstructions[1]).toContain("You are Amanda");
+  });
+
+  test("rejects reminder jobs when Temporal is unavailable", async () => {
+    const control = new IronlineStudioControl({
+      runStore: new StudioRunStore(),
+      connectors: [fakeConnector],
+      mcpService: createReadyMcpService() as any,
+    });
+
+    await expect(
+      control.scheduleCallback({
+        jobType: "reminder.send",
+        executeAt: new Date("2026-01-01T00:05:00.000Z").toISOString(),
+        payload: {
+          messageText: "Reminder: stretch.",
+          requestedTime: "2026-01-01T00:05:00.000Z",
+          sourceChat: {
+            chatId: "iMessage;-;+13128344710",
+            service: "iMessage",
+          },
+          sender: {
+            identifier: "+13128344710",
+            name: "Tegan Burns",
+          },
+          target: {
+            recipient: "+13128344710",
+            chatId: "iMessage;-;+13128344710",
+            service: "iMessage",
+          },
+          timezone: "America/Los_Angeles",
+        },
+      })
+    ).rejects.toThrow("Temporal is not configured");
   });
 
   test("blocks manual runs when the remote LanceDB MCP is not ready", async () => {
