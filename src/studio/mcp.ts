@@ -320,7 +320,7 @@ export function createDefaultMcpTargets(): McpTargetDefinition[] {
         envVarNames: ["AUTH_TOKEN"],
       },
       capabilities: ["tools.list", "tools.call", "resources.list", "prompts.list"],
-      requiredTools: ["send_message", "get_messages", "search_messages", "mark_read", "set_typing"],
+      requiredTools: ["send_message", "get_messages", "search_messages"],
       requiredForRuntime: true,
     },
     {
@@ -352,7 +352,7 @@ export function createDefaultMcpTargets(): McpTargetDefinition[] {
         envVarNames: ["AMANDA_MCP_TOKEN", "AUTH_TOKEN"],
       },
       capabilities: ["tools.list", "tools.call", "resources.list", "prompts.list"],
-      requiredTools: ["send_message", "get_messages", "search_messages", "mark_read", "set_typing"],
+      requiredTools: ["send_message", "get_messages", "search_messages"],
       requiredForRuntime: false,
     },
   ];
