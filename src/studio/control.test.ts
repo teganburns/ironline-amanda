@@ -261,7 +261,7 @@ describe("IronlineStudioControl", () => {
           messageText: "Reminder: stretch.",
           requestedTime: "2026-01-01T00:05:00.000Z",
           sourceChat: {
-            chatId: "iMessage;-;+13128344710",
+            chatId: "any;-;+13128344710",
             service: "iMessage",
           },
           sender: {
@@ -270,7 +270,7 @@ describe("IronlineStudioControl", () => {
           },
           target: {
             recipient: "+13128344710",
-            chatId: "iMessage;-;+13128344710",
+            chatId: "any;-;+13128344710",
             service: "iMessage",
           },
           timezone: "America/Los_Angeles",

@@ -19,6 +19,13 @@ import { randomUUID } from "node:crypto";
 const BB_URL = (process.env.BLUEBUBBLES_URL ?? "http://localhost:1234").replace(/\/$/, "");
 const BB_KEY = process.env.BLUE_BUBBLES_KEY ?? "";
 
+export function normalizeChatGuid(chatId: string): string {
+  const trimmed = chatId.trim();
+  const directMatch = trimmed.match(/^iMessage;-;(.+)$/);
+  if (directMatch) return `any;-;${directMatch[1]}`;
+  return trimmed;
+}
+
 function buildUrl(path: string, params: Record<string, string | number> = {}): string {
   const url = new URL(`${BB_URL}${path}`);
   url.searchParams.set("password", BB_KEY);
@@ -100,7 +107,7 @@ function mapBBMessage(msg: any, fallbackChatId: string): Message {
     chatId,
     isFromMe: msg.isFromMe ?? false,
     isRead: msg.isRead ?? false,
-    service: msg.service ?? "iMessage",
+    service: msg.handle?.service ?? msg.service ?? "iMessage",
     date: new Date(msg.dateCreated).toISOString(),
     isReaction,
     reactionType: isReaction ? (reactionNames[base] ?? null) : null,
@@ -122,17 +129,18 @@ export async function getMessages(opts: GetMessagesOpts = {}): Promise<Message[]
   let messages: Message[];
 
   if (chatId) {
-    // Chat-specific history (DESC order, most recent first)
+    const normalizedChatId = normalizeChatGuid(chatId);
+    // Chat-specific history (most recent first by default)
     const res: any = await bbGet(
-      `/api/v1/chat/${encodeURIComponent(chatId)}/message`,
-      { limit: Math.min(limit * 2, 500), sort: "DESC" }
+      `/api/v1/chat/${encodeURIComponent(normalizedChatId)}/message`,
+      { limit: Math.min(limit * 2, 500) }
     );
-    messages = ((res?.data ?? []) as any[]).map((m) => mapBBMessage(m, chatId));
+    messages = ((res?.data ?? []) as any[]).map((m) => mapBBMessage(m, normalizedChatId));
   } else {
-    // All messages since a timestamp (ASC order, oldest first — good for polling)
-    const params: Record<string, string | number> = { limit, sort: "ASC" };
-    if (since) params.after = since.getTime();
-    const res: any = await bbGet("/api/v1/message", params);
+    // All messages across chats, optionally filtered by timestamp
+    const body: Record<string, unknown> = { limit, with: ["chats"] };
+    if (since) body.after = since.getTime();
+    const res: any = await bbPost("/api/v1/message/query", body);
     messages = ((res?.data ?? []) as any[]).map((m) => mapBBMessage(m, ""));
   }
 
@@ -167,7 +175,7 @@ export async function lookupContact(address: string): Promise<string | null> {
 export async function markChatRead(chatGuid: string): Promise<void> {
   try {
     // Requires BlueBubbles Private API — silently ignored if unavailable
-    await bbPost(`/api/v1/chat/${encodeURIComponent(chatGuid)}/read`, {});
+    await bbPost(`/api/v1/chat/${encodeURIComponent(normalizeChatGuid(chatGuid))}/read`, {});
   } catch {
     // no-op
   }

@@ -81,7 +81,7 @@ function normalizeMessagePayload(request: RunRequest): MessagePayload {
   }
 
   const sender = String(request.context?.sender ?? "+10000000000");
-  const chatId = String(request.context?.chat_id ?? `iMessage;${sender}`);
+  const chatId = String(request.context?.chat_id ?? `any;-;${sender}`);
 
   return {
     trigger: "imessage",

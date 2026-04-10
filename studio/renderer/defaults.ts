@@ -2,7 +2,7 @@ import type { AgentRunJobPayload, JobSpec, RunRequest } from "../../src/studio/t
 
 const defaultSender = "+13128344710";
 const defaultSenderName = "Tegan Burns";
-const defaultChatId = `iMessage;-;${defaultSender}`;
+const defaultChatId = `any;-;${defaultSender}`;
 const defaultService = "iMessage";
 
 export const defaultRunRequest: RunRequest = {

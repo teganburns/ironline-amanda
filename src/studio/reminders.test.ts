@@ -14,7 +14,7 @@ describe("reminder scheduling helpers", () => {
       currentTime: "2026-04-06T12:00:00.000Z",
       timezone: "America/Los_Angeles",
       sourceChat: {
-        chatId: "iMessage;-;+13128344710",
+        chatId: "any;-;+13128344710",
         service: "iMessage",
       },
       sender: {
@@ -33,7 +33,7 @@ describe("reminder scheduling helpers", () => {
         requestedTime: "tomorrow",
         currentTime: "2026-04-06T12:00:00.000Z",
         sourceChat: {
-          chatId: "iMessage;-;+13128344710",
+          chatId: "any;-;+13128344710",
           service: "iMessage",
         },
         sender: {
@@ -51,7 +51,7 @@ describe("reminder scheduling helpers", () => {
         executeAt: "2026-04-06T11:59:00.000Z",
         currentTime: "2026-04-06T12:00:00.000Z",
         sourceChat: {
-          chatId: "iMessage;-;+13128344710",
+          chatId: "any;-;+13128344710",
           service: "iMessage",
         },
         sender: {
@@ -69,7 +69,7 @@ describe("reminder scheduling helpers", () => {
       currentTime: "2026-04-06T12:00:00.000Z",
       timezone: "America/Los_Angeles",
       sourceChat: {
-        chatId: "iMessage;-;+13128344710",
+        chatId: "any;-;+13128344710",
         service: "iMessage",
       },
       sender: {
@@ -79,7 +79,7 @@ describe("reminder scheduling helpers", () => {
     });
 
     expect(built.payload.target.recipient).toBe("+13128344710");
-    expect(built.payload.target.chatId).toBe("iMessage;-;+13128344710");
+    expect(built.payload.target.chatId).toBe("any;-;+13128344710");
     expect(built.payload.messageText).toBe("Reminder: stretch.");
   });
 });

@@ -56,7 +56,7 @@ describe("temporal helpers", () => {
             messageText: "Reminder: stretch.",
             requestedTime: "in 5 minutes",
             sourceChat: {
-              chatId: "iMessage;-;+13128344710",
+              chatId: "any;-;+13128344710",
               service: "iMessage",
             },
             sender: {
@@ -65,7 +65,7 @@ describe("temporal helpers", () => {
             },
             target: {
               recipient: "+13128344710",
-              chatId: "iMessage;-;+13128344710",
+              chatId: "any;-;+13128344710",
               service: "iMessage",
             },
             timezone: "America/Los_Angeles",

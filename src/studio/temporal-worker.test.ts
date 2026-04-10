@@ -47,7 +47,7 @@ describe("temporal worker job execution", () => {
           messageText: "Reminder: stretch.",
           requestedTime: "in 5 minutes",
           sourceChat: {
-            chatId: "iMessage;-;+13128344710",
+            chatId: "any;-;+13128344710",
             service: "iMessage",
           },
           sender: {
@@ -56,7 +56,7 @@ describe("temporal worker job execution", () => {
           },
           target: {
             recipient: "+13128344710",
-            chatId: "iMessage;-;+13128344710",
+            chatId: "any;-;+13128344710",
             service: "iMessage",
             summary: "Tegan Burns",
           },
