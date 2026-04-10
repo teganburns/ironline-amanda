@@ -76,6 +76,10 @@ const server = Bun.serve({
         return json(await control.listFlowGraphs());
       }
 
+      if (request.method === "GET" && url.pathname === "/flow-graphs/document") {
+        return json(await control.getFlowGraphDocument());
+      }
+
       if (request.method === "GET" && url.pathname.startsWith("/flow-graphs/")) {
         const graphId = url.pathname.split("/").at(-1) ?? "";
         return json(await control.getFlowGraph(graphId));
@@ -161,6 +165,11 @@ const server = Bun.serve({
       if (request.method === "POST" && url.pathname.startsWith("/flow-graphs/") && url.pathname.endsWith("/delete")) {
         const graphId = url.pathname.split("/")[2] ?? "";
         return json(await control.deleteFlowGraph(graphId));
+      }
+
+      if (request.method === "POST" && url.pathname.startsWith("/flow-graphs/") && url.pathname.endsWith("/activate")) {
+        const graphId = url.pathname.split("/")[2] ?? "";
+        return json(await control.setActiveFlowGraph(graphId));
       }
 
       if (request.method === "POST" && url.pathname.startsWith("/flow-graphs/")) {

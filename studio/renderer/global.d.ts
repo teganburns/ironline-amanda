@@ -2,6 +2,10 @@ import type {
   ApprovalRule,
   BridgeInfo,
   CompiledPromptPreview,
+  FlowGraph,
+  FlowGraphDocument,
+  FlowGraphInput,
+  FlowGraphPatch,
   JobRecord,
   JobSpec,
   McpInvocationResult,
@@ -69,6 +73,13 @@ declare global {
       quitApp(): Promise<void>;
       restartApp(): Promise<void>;
       rebuildAndRestart(): Promise<void>;
+      listFlowGraphs(): Promise<FlowGraph[]>;
+      getFlowGraphDocument(): Promise<FlowGraphDocument>;
+      getFlowGraph(id: string): Promise<FlowGraph | null>;
+      createFlowGraph(input: FlowGraphInput): Promise<FlowGraph>;
+      updateFlowGraph(id: string, patch: FlowGraphPatch): Promise<FlowGraph>;
+      deleteFlowGraph(id: string): Promise<FlowGraph[]>;
+      setActiveFlowGraph(id: string): Promise<FlowGraphDocument>;
     };
   }
 }

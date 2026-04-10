@@ -1,4 +1,10 @@
-import type { FlowGraphEdge, FlowGraphNode, FlowNodeData, FlowNodeType } from "../../src/studio/types";
+import {
+  createFlowNodeFromBlockTemplate,
+  getFlowBlockDefinition,
+  inferLegacyBlockKey,
+  listFlowBlockDefinitions,
+} from "../../src/studio/flow-blocks";
+import type { FlowBlockKey, FlowGraphEdge, FlowGraphNode, FlowNodeData, FlowNodeType } from "../../src/studio/types";
 
 export const FLOW_INPUT_HANDLE_ID = "in";
 export const FLOW_OUTPUT_HANDLE_ID = "out";
@@ -10,6 +16,7 @@ export const flowNodeTypeLabels: Record<FlowNodeType, string> = {
   agent: "Agent",
   tool: "Tool",
   logic: "Logic",
+  action: "Action",
   output: "Output",
 };
 
@@ -20,6 +27,7 @@ export const flowNodeTypeDescriptions: Record<FlowNodeType, string> = {
   agent: "Run Amanda or another model-driven orchestration step.",
   tool: "Call a concrete MCP tool or external action.",
   logic: "Branch, guard, or shape workflow execution rules.",
+  action: "Execute an operational side effect around Amanda's lifecycle.",
   output: "Deliver the final result back to the destination channel.",
 };
 
@@ -34,6 +42,11 @@ export const FLOW_PALETTE_ITEMS: Array<{
 }));
 
 type FlowConnectionLike = Pick<FlowGraphEdge, "source" | "target" | "sourceHandle" | "targetHandle">;
+export interface FlowConfigEntry {
+  id: string;
+  key: string;
+  value: string;
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -52,6 +65,13 @@ export function createFlowNode(type: FlowNodeType, position: { x: number; y: num
       config: {},
     },
   });
+}
+
+export function createFlowBlockNode(
+  blockKey: FlowBlockKey,
+  position: { x: number; y: number }
+): FlowGraphNode {
+  return normalizeFlowNode(createFlowNodeFromBlockTemplate(blockKey, position));
 }
 
 export function createFlowEdge(connection: FlowConnectionLike): FlowGraphEdge {
@@ -83,9 +103,55 @@ export function parseFlowConfigInput(source: string): Record<string, unknown> {
   return parsed;
 }
 
+export function formatFlowConfigEntryValue(value: unknown) {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  return JSON.stringify(value ?? null);
+}
+
+export function parseFlowConfigEntryValue(source: string): unknown {
+  const trimmed = source.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return source;
+  }
+}
+
+export function flowConfigToEntries(config?: Record<string, unknown>): FlowConfigEntry[] {
+  return Object.entries(config ?? {}).map(([key, value]) => ({
+    id: `config-entry-${globalThis.crypto.randomUUID()}`,
+    key,
+    value: formatFlowConfigEntryValue(value),
+  }));
+}
+
+export function buildFlowConfigFromEntries(entries: FlowConfigEntry[]) {
+  const config: Record<string, unknown> = {};
+
+  for (const entry of entries) {
+    const key = entry.key.trim();
+    if (!key) {
+      continue;
+    }
+
+    config[key] = parseFlowConfigEntryValue(entry.value);
+  }
+
+  return config;
+}
+
 export function normalizeFlowNode(node: FlowGraphNode): FlowGraphNode {
   const data = isObject(node.data) ? (node.data as FlowNodeData) : ({} as FlowNodeData);
-  const nodeType = (data.nodeType ?? "tool") as FlowNodeType;
+  const inferredBlockKey = inferLegacyBlockKey({ id: node.id, data });
+  const definition = inferredBlockKey ? getFlowBlockDefinition(inferredBlockKey) : null;
+  const nodeType = (definition?.nodeType ?? data.nodeType ?? "tool") as FlowNodeType;
   const config = isObject(data.config) ? data.config : {};
 
   return {
@@ -99,17 +165,27 @@ export function normalizeFlowNode(node: FlowGraphNode): FlowGraphNode {
       label:
         typeof data.label === "string" && data.label.trim()
           ? data.label
-          : flowNodeTypeLabels[nodeType],
+          : definition?.label ?? flowNodeTypeLabels[nodeType],
       nodeType,
+      blockKey: inferredBlockKey ?? undefined,
+      schemaVersion:
+        typeof data.schemaVersion === "number" ? data.schemaVersion : definition?.schemaVersion,
       description:
         typeof data.description === "string" && data.description.trim()
           ? data.description
-          : flowNodeTypeDescriptions[nodeType],
+          : definition?.description ?? flowNodeTypeDescriptions[nodeType],
       enabled: data.enabled !== false,
       config,
     },
   };
 }
+
+export const FLOW_BLOCK_PALETTE_ITEMS = listFlowBlockDefinitions().map((definition) => ({
+  blockKey: definition.blockKey,
+  nodeType: definition.nodeType,
+  label: definition.label,
+  description: definition.description,
+}));
 
 export function normalizeFlowNodes(nodes: FlowGraphNode[]) {
   return nodes.map((node) => normalizeFlowNode(node));

@@ -343,6 +343,15 @@ export interface StudioConfigSnapshot {
 
 // ─── Flow Graph (Visual Pipeline Editor) ────────────────────────────────────
 
+export type AmandaTier =
+  | "no_reply"
+  | "banter"
+  | "question"
+  | "reasoning"
+  | "complex"
+  | "correction"
+  | "image";
+
 export type FlowNodeType =
   | "trigger"
   | "classify"
@@ -350,11 +359,85 @@ export type FlowNodeType =
   | "agent"
   | "tool"
   | "logic"
+  | "action"
   | "output";
+
+export type FlowBlockKey =
+  | "trigger.imessage_received"
+  | "classify.message"
+  | "logic.no_reply_gate"
+  | "logic.holding_reply"
+  | "context.load_history"
+  | "tool.imessage_mcp"
+  | "tool.context_mcp"
+  | "tool.temporal_mcp"
+  | "tool.browser_mcp"
+  | "agent.amanda_run"
+  | "output.send_reply"
+  | "action.mark_read"
+  | "action.set_typing";
+
+export interface FlowBlockFieldOption {
+  label: string;
+  value: string;
+}
+
+export interface FlowBlockFieldDefinition {
+  key: string;
+  label: string;
+  kind: "string" | "number" | "boolean" | "select" | "multiselect" | "tier_models";
+  description?: string;
+  options?: FlowBlockFieldOption[];
+  min?: number;
+}
+
+export interface FlowBlockDefinition {
+  blockKey: FlowBlockKey;
+  label: string;
+  nodeType: FlowNodeType;
+  description: string;
+  singleton: boolean;
+  requiredForRuntime: boolean;
+  schemaVersion: number;
+  defaultEnabled?: boolean;
+  defaultConfig?: Record<string, unknown>;
+  inspectorFields?: FlowBlockFieldDefinition[];
+}
+
+export interface FlowRuntimeTierModel {
+  model: string;
+  maxTurns: number;
+}
+
+export interface FlowRuntimeConfig {
+  graphId: string;
+  graphName: string;
+  classifyModel: string;
+  holdingReplyTiers: AmandaTier[];
+  holdingReply: {
+    enabled: boolean;
+    fallbackMessage: string | null;
+  };
+  historyLimit: number;
+  imageModel: string;
+  tierModels: Record<Exclude<AmandaTier, "no_reply">, FlowRuntimeTierModel>;
+  mcps: {
+    imessage: { enabled: boolean; required: boolean };
+    context: { enabled: boolean; required: boolean };
+    temporal: { enabled: boolean; required: boolean };
+    browser: { enabled: boolean; required: boolean };
+  };
+  actions: {
+    markRead: { enabled: boolean };
+    setTyping: { enabled: boolean; slowOnly: boolean };
+  };
+}
 
 export interface FlowNodeData extends Record<string, unknown> {
   label: string;
   nodeType: FlowNodeType;
+  blockKey?: FlowBlockKey;
+  schemaVersion?: number;
   description?: string;
   config?: Record<string, unknown>;
   enabled?: boolean;

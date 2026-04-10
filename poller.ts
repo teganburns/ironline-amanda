@@ -9,7 +9,7 @@
  */
 
 import { loadProjectEnv } from "./src/env";
-import { getMessages, lookupContact, markChatRead, type Message } from "./src/bluebubbles";
+import { getMessages, lookupContact, type Message } from "./src/bluebubbles";
 import { loadSeen, markSeen } from "./src/seen";
 import type { MessagePayload, MessageType } from "./src/agent";
 import { IronlineStudioControl } from "./src/studio/control";
@@ -63,7 +63,6 @@ async function processMessages(
 
     console.log(`[poller] → agent: ${senderName ?? msg.sender}: ${msg.text ?? `[${payload.message_type}]`}`);
     try {
-      await markChatRead(msg.chatId).catch(() => {}); // mark read before replying
       await studioControl.runAgent({
         trigger: "imessage",
         channel: "imessage",
@@ -74,7 +73,7 @@ async function processMessages(
           chat_id: payload.chat_id,
           service: payload.service,
         },
-        messagePayload: payload,
+        messagePayload: payload as unknown as Record<string, unknown>,
       });
     } catch (error: any) {
       console.error(

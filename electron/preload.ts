@@ -53,10 +53,12 @@ const api = {
   restartApp: () => ipcRenderer.invoke(studioIpc.restartApp),
   rebuildAndRestart: () => ipcRenderer.invoke(studioIpc.rebuildAndRestart),
   listFlowGraphs: () => ipcRenderer.invoke(studioIpc.listFlowGraphs),
+  getFlowGraphDocument: () => ipcRenderer.invoke(studioIpc.getFlowGraphDocument),
   getFlowGraph: (id: string) => ipcRenderer.invoke(studioIpc.getFlowGraph, id),
   createFlowGraph: (input: unknown) => ipcRenderer.invoke(studioIpc.createFlowGraph, input),
   updateFlowGraph: (id: string, patch: unknown) => ipcRenderer.invoke(studioIpc.updateFlowGraph, id, patch),
   deleteFlowGraph: (id: string) => ipcRenderer.invoke(studioIpc.deleteFlowGraph, id),
+  setActiveFlowGraph: (id: string) => ipcRenderer.invoke(studioIpc.setActiveFlowGraph, id),
 };
 
 contextBridge.exposeInMainWorld("ironlineStudio", api);

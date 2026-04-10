@@ -4,6 +4,7 @@ import { getDefaultAgentDefinition } from "./agent-definition";
 import { createDefaultConnectors } from "./connectors";
 import { resolveApprovalMode } from "./approval";
 import { MCP_TARGET_IDS, StudioMcpService } from "./mcp";
+import { compileActiveFlowRuntimeConfig } from "./flow-blocks";
 import { PromptGraphStore, compilePublishedPromptGraph } from "./prompt-graphs";
 import { FlowGraphStore } from "./flow-graphs";
 import { scheduleTemporalJob } from "./temporal";
@@ -15,6 +16,7 @@ import type {
   CompiledPromptPreview,
   ConnectorAdapter,
   FlowGraph,
+  FlowGraphDocument,
   FlowGraphInput,
   FlowGraphPatch,
   JobRecord,
@@ -77,7 +79,7 @@ export class StudioRuntimeReadinessError extends Error {
 
 function normalizeMessagePayload(request: RunRequest): MessagePayload {
   if (request.messagePayload) {
-    return request.messagePayload as MessagePayload;
+    return request.messagePayload as unknown as MessagePayload;
   }
 
   const sender = String(request.context?.sender ?? "+10000000000");
@@ -173,10 +175,31 @@ export class IronlineStudioControl {
   }
 
   private async ensureRuntimeReadiness(request: RunRequest): Promise<void> {
-    const requiredTargetIds = [MCP_TARGET_IDS.localContext];
+    const flowConfig = compileActiveFlowRuntimeConfig(this.flowGraphStore.getDocument());
+    const requiredTargetIds: string[] = [];
 
-    if (request.trigger === "imessage") {
+    if (flowConfig.mcps.context.enabled && flowConfig.mcps.context.required) {
+      requiredTargetIds.push(MCP_TARGET_IDS.localContext);
+    }
+
+    if (
+      flowConfig.mcps.imessage.enabled &&
+      flowConfig.mcps.imessage.required &&
+      request.trigger === "imessage"
+    ) {
       requiredTargetIds.push(MCP_TARGET_IDS.localIMessage);
+    }
+
+    if (flowConfig.mcps.temporal.enabled && flowConfig.mcps.temporal.required) {
+      requiredTargetIds.push(MCP_TARGET_IDS.localTemporal);
+    }
+
+    if (flowConfig.mcps.browser.enabled && flowConfig.mcps.browser.required) {
+      requiredTargetIds.push(MCP_TARGET_IDS.localBrowser);
+    }
+
+    if (!requiredTargetIds.length) {
+      return;
     }
 
     const overviews = await Promise.all(requiredTargetIds.map((targetId) => this.mcpService.getOverview(targetId)));
@@ -374,6 +397,10 @@ export class IronlineStudioControl {
     return Promise.resolve(this.flowGraphStore.listGraphs());
   }
 
+  getFlowGraphDocument(): Promise<FlowGraphDocument> {
+    return Promise.resolve(this.flowGraphStore.getDocument());
+  }
+
   getFlowGraph(id: string): Promise<FlowGraph | null> {
     return Promise.resolve(this.flowGraphStore.getGraph(id));
   }
@@ -388,6 +415,10 @@ export class IronlineStudioControl {
 
   deleteFlowGraph(id: string): Promise<FlowGraph[]> {
     return this.flowGraphStore.deleteGraph(id);
+  }
+
+  setActiveFlowGraph(id: string): Promise<FlowGraphDocument> {
+    return this.flowGraphStore.setActiveGraph(id);
   }
 
   async listMcpTargets(): Promise<McpTargetDefinition[]> {

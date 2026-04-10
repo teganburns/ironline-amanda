@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { execSync } from "node:child_process";
+import { join } from "node:path";
 import { getMessages, downloadBBAttachment } from "./bluebubbles.js";
 import { loadProjectEnv } from "./env";
 import {
@@ -26,9 +27,18 @@ import {
   getLanceDbContextLocalMcpUrl,
   getTemporalLocalMcpUrl,
 } from "./mcp-endpoints";
+import { compileActiveFlowRuntimeConfig } from "./studio/flow-blocks";
 import { compilePublishedPromptGraph } from "./studio/prompt-graphs";
 import { FlowGraphStore } from "./studio/flow-graphs";
-import type { ArtifactRecord, RunPromptSource, RunRequest, RunResult, TimelineEvent, ToolEvent } from "./studio/types";
+import type {
+  ArtifactRecord,
+  FlowRuntimeConfig,
+  RunPromptSource,
+  RunRequest,
+  RunResult,
+  TimelineEvent,
+  ToolEvent,
+} from "./studio/types";
 
 loadProjectEnv();
 
@@ -37,78 +47,9 @@ const CONTEXT_MCP_URL = getLanceDbContextLocalMcpUrl();
 const TEMPORAL_MCP_URL = getTemporalLocalMcpUrl();
 const BROWSER_MCP_URL = getBrowserLocalMcpUrl();
 
-interface FlowConfig {
-  classifyModel: string;
-  holdingReplyTiers: string[];
-  historyLimit: number;
-  imageModel: string;
-  tierModels: Record<string, { model: string; maxTurns: number }>;
-  mcps: {
-    imessage: { enabled: boolean };
-    context:  { enabled: boolean };
-    temporal: { enabled: boolean };
-    browser:  { enabled: boolean };
-  };
-}
-
-const DEFAULT_FLOW_CONFIG: FlowConfig = {
-  classifyModel: process.env.TRIAGE_MODEL ?? "gpt-5.4-nano",
-  holdingReplyTiers: ["reasoning", "complex", "correction", "image"],
-  historyLimit: 15,
-  imageModel: process.env.IMAGE_MODEL ?? "gpt-4o",
-  tierModels: {
-    banter:     { model: process.env.TRIAGE_MODEL    ?? "gpt-5.4-nano", maxTurns: 8 },
-    question:   { model: process.env.STANDARD_MODEL  ?? "gpt-5.4",      maxTurns: 10 },
-    reasoning:  { model: process.env.STANDARD_MODEL  ?? "gpt-5.4",      maxTurns: 15 },
-    complex:    { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano",  maxTurns: 15 },
-    correction: { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano",  maxTurns: 15 },
-    image:      { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano",  maxTurns: 15 },
-  },
-  mcps: {
-    imessage: { enabled: true },
-    context:  { enabled: true },
-    temporal: { enabled: true },
-    browser:  { enabled: true },
-  },
-};
-
-function loadFlowConfig(): FlowConfig {
-  try {
-    const store = new FlowGraphStore();
-    const graphs = store.listGraphs();
-    const graph = graphs[0];
-    if (!graph) return DEFAULT_FLOW_CONFIG;
-
-    const findNode = (id: string) => graph.nodes.find((n) => n.id === id);
-    const classifyNode  = findNode("classify-1");
-    const contextNode   = findNode("context-1");
-    const agentNode     = findNode("agent-1");
-    const imessageNode  = findNode("tool-imessage-1");
-    const contextMcpNode = findNode("tool-context-1");
-    const temporalNode  = findNode("tool-temporal-1");
-    const browserNode   = findNode("tool-browser-1");
-
-    return {
-      classifyModel:
-        (classifyNode?.data.config?.model as string) ?? DEFAULT_FLOW_CONFIG.classifyModel,
-      holdingReplyTiers:
-        (classifyNode?.data.config?.holdingReplyTiers as string[]) ?? DEFAULT_FLOW_CONFIG.holdingReplyTiers,
-      historyLimit:
-        (contextNode?.data.config?.historyLimit as number) ?? DEFAULT_FLOW_CONFIG.historyLimit,
-      imageModel:
-        (agentNode?.data.config?.imageModel as string) ?? DEFAULT_FLOW_CONFIG.imageModel,
-      tierModels:
-        (agentNode?.data.config?.tierModels as FlowConfig["tierModels"]) ?? DEFAULT_FLOW_CONFIG.tierModels,
-      mcps: {
-        imessage: { enabled: (imessageNode?.data.config?.enabled as boolean) ?? true },
-        context:  { enabled: (contextMcpNode?.data.config?.enabled as boolean) ?? true },
-        temporal: { enabled: (temporalNode?.data.config?.enabled as boolean) ?? true },
-        browser:  { enabled: (browserNode?.data.config?.enabled as boolean) ?? true },
-      },
-    };
-  } catch {
-    return DEFAULT_FLOW_CONFIG;
-  }
+function loadFlowConfig(): FlowRuntimeConfig {
+  const store = new FlowGraphStore();
+  return compileActiveFlowRuntimeConfig(store.getDocument());
 }
 
 let langfuseClient: Langfuse | null = null;
@@ -237,7 +178,7 @@ export async function callAgent(
     },
     agentId: request.agentId ?? "amanda-core",
     approvalMode: request.approvalMode ?? "autonomous",
-    messagePayload: request.messagePayload ?? payload,
+    messagePayload: (request.messagePayload ?? (payload as unknown as Record<string, unknown>)),
     replayOfRunId: request.replayOfRunId,
   };
   const promptExecution = resolvePromptExecution(normalizedRequest.agentId ?? "amanda-core", promptExecutionOptions);
@@ -276,6 +217,8 @@ export async function callAgent(
   timeline.push(
     timelineEvent("runtime", "history.loaded", `Loaded ${history.length} messages of history`, {
       chatId: payload.chat_id,
+      activeGraphId: config.graphId,
+      activeGraphName: config.graphName,
     })
   );
 
@@ -301,54 +244,167 @@ export async function callAgent(
     url: BROWSER_MCP_URL,
     requestInit: { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } },
   });
-  const activeMcpServers = [mcpServer, contextMcpServer];
+  const activeMcpServers: MCPServerStreamableHttp[] = [];
+  let imessageMcpConnected = false;
+  let contextMcpConnected = false;
+  let typingStarted = false;
+
+  const connectConfiguredMcp = async ({
+    enabled,
+    required,
+    server,
+    label,
+    skippedSummary,
+    degradedSummary,
+  }: {
+    enabled: boolean;
+    required: boolean;
+    server: MCPServerStreamableHttp;
+    label: string;
+    skippedSummary: string;
+    degradedSummary: string;
+  }) => {
+    if (!enabled) {
+      timeline.push(timelineEvent("connector", "mcp.skipped", skippedSummary));
+      return false;
+    }
+
+    try {
+      await server.connect();
+      activeMcpServers.push(server);
+      timeline.push(timelineEvent("connector", "mcp.connected", `Connected ${label}`));
+      return true;
+    } catch (error) {
+      if (required) {
+        throw new Error(
+          `${label} is enabled in Amanda's active flow graph but could not connect: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+
+      timeline.push(
+        timelineEvent(
+          "connector",
+          "mcp.degraded",
+          degradedSummary,
+          error instanceof Error ? error.message : String(error)
+        )
+      );
+      return false;
+    }
+  };
+
+  const callIMessageLifecycleTool = async (
+    name: "mark_read" | "set_typing",
+    args: Record<string, unknown>,
+    startedSummary: string,
+    completedSummary: string,
+    failedSummary: string
+  ) => {
+    if (!imessageMcpConnected) {
+      timeline.push(
+        timelineEvent("tool", `${name}.skipped`, `${failedSummary} because the iMessage MCP is disabled or unavailable.`)
+      );
+      return false;
+    }
+
+    toolEvents.push({
+      name,
+      status: "started",
+      timestamp: new Date().toISOString(),
+      summary: startedSummary,
+    });
+
+    try {
+      const result = await (mcpServer as any).callTool(name, args);
+      if (result?.isError) {
+        toolEvents.push({
+          name,
+          status: "error",
+          timestamp: new Date().toISOString(),
+          summary: failedSummary,
+          rawPayload: result,
+        });
+        timeline.push(timelineEvent("tool", `${name}.error`, failedSummary, result));
+        return false;
+      }
+
+      toolEvents.push({
+        name,
+        status: "completed",
+        timestamp: new Date().toISOString(),
+        summary: completedSummary,
+        rawPayload: result,
+      });
+      timeline.push(timelineEvent("tool", `${name}.completed`, completedSummary, result));
+      return true;
+    } catch (error: any) {
+      toolEvents.push({
+        name,
+        status: "error",
+        timestamp: new Date().toISOString(),
+        summary: failedSummary,
+        rawPayload: error?.message ?? String(error),
+      });
+      timeline.push(
+        timelineEvent("tool", `${name}.error`, failedSummary, error?.message ?? String(error))
+      );
+      return false;
+    }
+  };
+
+  const stopTypingIndicator = async (reason: string) => {
+    if (!typingStarted) {
+      return;
+    }
+
+    const stopped = await callIMessageLifecycleTool(
+      "set_typing",
+      { chat_id: payload.chat_id, typing: false },
+      "Stopping typing indicator",
+      reason,
+      "Typing indicator stop failed"
+    );
+
+    if (stopped) {
+      typingStarted = false;
+    }
+  };
 
   try {
-    await mcpServer.connect();
-    await contextMcpServer.connect();
-    timeline.push(
-      timelineEvent("connector", "mcp.connected", "Connected iMessage and context MCP servers")
-    );
-    if (config.mcps.temporal.enabled) {
-      try {
-        await temporalMcpServer.connect();
-        activeMcpServers.push(temporalMcpServer);
-        timeline.push(
-          timelineEvent("connector", "mcp.connected", "Connected Temporal MCP server")
-        );
-      } catch (temporalError) {
-        timeline.push(
-          timelineEvent(
-            "connector",
-            "mcp.degraded",
-            "Temporal MCP was unavailable, so reminder scheduling tools are currently offline.",
-            temporalError instanceof Error ? temporalError.message : String(temporalError)
-          )
-        );
-      }
-    } else {
-      timeline.push(timelineEvent("connector", "mcp.skipped", "Temporal MCP disabled in flow config"));
-    }
-    if (config.mcps.browser.enabled) {
-      try {
-        await browserMcpServer.connect();
-        activeMcpServers.push(browserMcpServer);
-        timeline.push(
-          timelineEvent("connector", "mcp.connected", "Connected Browser MCP server")
-        );
-      } catch (browserError) {
-        timeline.push(
-          timelineEvent(
-            "connector",
-            "mcp.degraded",
-            "Browser MCP was unavailable, so browser navigation tools are currently offline.",
-            browserError instanceof Error ? browserError.message : String(browserError)
-          )
-        );
-      }
-    } else {
-      timeline.push(timelineEvent("connector", "mcp.skipped", "Browser MCP disabled in flow config"));
-    }
+    imessageMcpConnected = await connectConfiguredMcp({
+      enabled: config.mcps.imessage.enabled,
+      required: config.mcps.imessage.required,
+      server: mcpServer,
+      label: "iMessage MCP server",
+      skippedSummary: "iMessage MCP disabled in the active flow graph.",
+      degradedSummary: "iMessage MCP was unavailable, so Amanda could not use iMessage tools.",
+    });
+    contextMcpConnected = await connectConfiguredMcp({
+      enabled: config.mcps.context.enabled,
+      required: config.mcps.context.required,
+      server: contextMcpServer,
+      label: "context MCP server",
+      skippedSummary: "Context MCP disabled in the active flow graph.",
+      degradedSummary: "Context MCP was unavailable, so Amanda could not use memory tools.",
+    });
+    await connectConfiguredMcp({
+      enabled: config.mcps.temporal.enabled,
+      required: config.mcps.temporal.required,
+      server: temporalMcpServer,
+      label: "Temporal MCP server",
+      skippedSummary: "Temporal MCP disabled in the active flow graph.",
+      degradedSummary: "Temporal MCP was unavailable, so reminder scheduling tools are currently offline.",
+    });
+    await connectConfiguredMcp({
+      enabled: config.mcps.browser.enabled,
+      required: config.mcps.browser.required,
+      server: browserMcpServer,
+      label: "Browser MCP server",
+      skippedSummary: "Browser MCP disabled in the active flow graph.",
+      degradedSummary: "Browser MCP was unavailable, so browser navigation tools are currently offline.",
+    });
     // ── Triage ────────────────────────────────────────────────────────────────
     const classification = await classifyMessage(payload, history, trace, config.classifyModel);
     console.log(`[agent] tier: ${classification.tier}`);
@@ -379,19 +435,54 @@ export async function callAgent(
       return result;
     }
 
+    if (config.actions.markRead.enabled) {
+      await callIMessageLifecycleTool(
+        "mark_read",
+        { chat_id: payload.chat_id },
+        "Marking chat read",
+        "Marked chat read",
+        "Mark chat read failed"
+      );
+    }
+
+    const slowTier = config.holdingReplyTiers.includes(classification.tier);
+    const shouldStartTyping =
+      config.actions.setTyping.enabled &&
+      (!config.actions.setTyping.slowOnly || slowTier);
+
+    if (shouldStartTyping) {
+      const started = await callIMessageLifecycleTool(
+        "set_typing",
+        { chat_id: payload.chat_id, typing: true },
+        "Starting typing indicator",
+        "Typing indicator started",
+        "Typing indicator start failed"
+      );
+      typingStarted = started;
+    }
+
+    const holdingReplyText =
+      config.holdingReply.enabled && slowTier
+        ? classification.holding_reply?.trim() || config.holdingReply.fallbackMessage
+        : null;
+
     // Send holding reply immediately for slow tiers before heavy processing
-    if (classification.holding_reply && config.holdingReplyTiers.includes(classification.tier)) {
-      const holdSpan = trace.span({ name: "holding-reply", input: { text: classification.holding_reply } });
+    if (holdingReplyText) {
+      const holdSpan = trace.span({ name: "holding-reply", input: { text: holdingReplyText } });
       toolEvents.push({
         name: "send_message",
         status: "started",
         timestamp: new Date().toISOString(),
-        summary: classification.holding_reply,
+        summary: holdingReplyText,
       });
       try {
+        if (!imessageMcpConnected) {
+          throw new Error("iMessage MCP is disabled or unavailable.");
+        }
+
         const holdResult = await (mcpServer as any).callTool("send_message", {
           recipient: payload.sender,
-          text: classification.holding_reply,
+          text: holdingReplyText,
           chat_id: payload.chat_id,
         });
         if (holdResult?.isError) {
@@ -406,7 +497,7 @@ export async function callAgent(
           });
           timeline.push(timelineEvent("tool", "holding-reply.error", "Holding reply failed", holdResult));
         } else {
-          console.log(`[agent] holding reply sent: "${classification.holding_reply}"`);
+          console.log(`[agent] holding reply sent: "${holdingReplyText}"`);
           holdSpan.end({ output: { status: "sent" } });
           toolEvents.push({
             name: "send_message",
@@ -416,6 +507,7 @@ export async function callAgent(
             rawPayload: holdResult,
           });
           timeline.push(timelineEvent("tool", "holding-reply.sent", "Holding reply sent", holdResult));
+          await stopTypingIndicator("Stopped typing after holding reply");
         }
       } catch (e: any) {
         console.error(`[agent] holding reply callTool threw: ${e?.message ?? String(e)}`);
@@ -483,6 +575,17 @@ export async function callAgent(
 
           // Store in vector DB via context-mcp
           let storeResult: any;
+          if (!contextMcpConnected) {
+            timeline.push(
+              timelineEvent(
+                "tool",
+                "memory_store.skipped",
+                "Context MCP disabled or unavailable, so image memory was not stored."
+              )
+            );
+            continue;
+          }
+
           try {
             storeResult = await (contextMcpServer as any).callTool("memory_store", {
               user_key: payload.sender,
@@ -575,11 +678,15 @@ export async function callAgent(
       ["send_message", "send_image", "send_file"].includes(t)
     );
     const completedSilentReminder = toolCalls.includes("schedule_reminder");
-    if (!sentMessage && !completedSilentReminder && classification.tier !== "no_reply") {
+    if (!sentMessage && !completedSilentReminder) {
       console.warn(`[agent] warning — completed without calling send_message`);
       timeline.push(
         timelineEvent("runtime", "reply.missing", "Run completed without an outbound send tool call")
       );
+    }
+
+    if (typingStarted && sentMessage) {
+      await stopTypingIndicator("Stopped typing after outbound send");
     }
 
     const finishedAt = new Date().toISOString();
@@ -611,6 +718,7 @@ export async function callAgent(
     };
   } catch (e: any) {
     console.error(`[agent] error: ${e?.message ?? String(e)}`);
+    await stopTypingIndicator("Stopped typing after run failure");
     trace.update({ output: { error: String(e) } });
     const finishedAt = new Date().toISOString();
     return {
@@ -631,6 +739,7 @@ export async function callAgent(
       error: e?.message ?? String(e),
     };
   } finally {
+    await stopTypingIndicator("Stopped typing at run exit");
     await mcpServer.close().catch(() => {});
     await contextMcpServer.close().catch(() => {});
     await temporalMcpServer.close().catch(() => {});
@@ -662,7 +771,7 @@ Holding reply guidelines: short, conversational, context-aware. Examples: "Got i
 
 async function classifyMessage(
   payload: MessagePayload,
-  history: ReturnType<typeof getMessages>,
+  history: Awaited<ReturnType<typeof getMessages>>,
   trace: ReturnType<Langfuse["trace"]>,
   classifyModel: string
 ): Promise<ClassificationResult> {
@@ -687,9 +796,7 @@ async function classifyMessage(
       })
       .join("\n");
 
-    const currentMsg = payload.message_type === "image"
-      ? `[Image sent]${payload.text ? ` with caption: ${payload.text}` : ""}`
-      : (payload.text ?? "[no text]");
+    const currentMsg = payload.text ?? `[${payload.message_type}]`;
 
     const userContent = [
       recentHistory ? `Recent context:\n${recentHistory}` : "",
@@ -855,7 +962,7 @@ async function describeImage(
 
 export function formatInput(
   payload: MessagePayload,
-  history: ReturnType<typeof getMessages>,
+  history: Awaited<ReturnType<typeof getMessages>>,
   imageDescriptions: string[] = []
 ): string {
   const name = payload.sender_name ? `${payload.sender_name} (${payload.sender})` : payload.sender;

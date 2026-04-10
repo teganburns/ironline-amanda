@@ -3,6 +3,7 @@ import type {
   BridgeInfo,
   CompiledPromptPreview,
   FlowGraph,
+  FlowGraphDocument,
   FlowGraphInput,
   FlowGraphPatch,
   JobRecord,
@@ -161,6 +162,9 @@ export const studioClient = {
   listFlowGraphs(): Promise<FlowGraph[]> {
     return callBridgeMethod("listFlowGraphs");
   },
+  getFlowGraphDocument(): Promise<FlowGraphDocument> {
+    return callBridgeMethod("getFlowGraphDocument");
+  },
   getFlowGraph(id: string): Promise<FlowGraph | null> {
     return callBridgeMethod("getFlowGraph", id);
   },
@@ -172,5 +176,8 @@ export const studioClient = {
   },
   deleteFlowGraph(id: string): Promise<FlowGraph[]> {
     return callBridgeMethod("deleteFlowGraph", id);
+  },
+  setActiveFlowGraph(id: string): Promise<FlowGraphDocument> {
+    return callBridgeMethod("setActiveFlowGraph", id);
   },
 };

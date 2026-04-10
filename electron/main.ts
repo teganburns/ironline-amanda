@@ -302,10 +302,14 @@ ipcMain.handle(studioIpc.rebuildAndRestart, async () => {
   app.quit();
 });
 ipcMain.handle(studioIpc.listFlowGraphs, async () => bridge("/flow-graphs"));
+ipcMain.handle(studioIpc.getFlowGraphDocument, async () => bridge("/flow-graphs/document"));
 ipcMain.handle(studioIpc.getFlowGraph, async (_event, id: string) => bridge(`/flow-graphs/${id}`));
 ipcMain.handle(studioIpc.createFlowGraph, async (_event, input) => bridge("/flow-graphs", input));
 ipcMain.handle(studioIpc.updateFlowGraph, async (_event, id: string, patch) => bridge(`/flow-graphs/${id}`, patch));
 ipcMain.handle(studioIpc.deleteFlowGraph, async (_event, id: string) => bridge(`/flow-graphs/${id}/delete`, {}));
+ipcMain.handle(studioIpc.setActiveFlowGraph, async (_event, id: string) =>
+  bridge(`/flow-graphs/${id}/activate`, {})
+);
 
 app.whenReady().then(() => {
   createWindow();

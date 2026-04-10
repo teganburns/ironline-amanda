@@ -2,6 +2,12 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  DEFAULT_FLOW_GRAPH_EDGES,
+  createDefaultFlowGraphDocument,
+  createDefaultFlowGraphNodes,
+  normalizeFlowGraphDocument,
+} from "./flow-blocks";
 import { formatJsonDocument } from "./json";
 import { ensureStudioHome, getStudioHome } from "./paths";
 import type { FlowGraph, FlowGraphDocument, FlowGraphEdge, FlowGraphInput, FlowGraphNode, FlowGraphPatch } from "./types";
@@ -15,166 +21,7 @@ function nowIso() {
 }
 
 function getDefaultFlowGraphDocument(): FlowGraphDocument {
-  const now = nowIso();
-  const defaultGraph: FlowGraph = {
-    id: "amanda-pipeline-default",
-    name: "Amanda Pipeline",
-    description: "The default Amanda message processing pipeline",
-    createdAt: now,
-    updatedAt: now,
-    nodes: [
-      {
-        id: "trigger-1",
-        type: "amanda-flow-node",
-        position: { x: 60, y: 300 },
-        data: { label: "iMessage Received", nodeType: "trigger", description: "Incoming iMessage from a contact", enabled: true },
-      },
-      {
-        id: "classify-1",
-        type: "amanda-flow-node",
-        position: { x: 300, y: 300 },
-        data: {
-          label: "Message Classification",
-          nodeType: "classify",
-          description: "gpt-5.4-nano classifies into tier: no_reply, banter, question, reasoning, complex, correction, image",
-          config: {
-            model: "gpt-5.4-nano",
-            holdingReplyTiers: ["reasoning", "complex", "correction", "image"],
-          },
-          enabled: true,
-        },
-      },
-      {
-        id: "no-reply-gate-1",
-        type: "amanda-flow-node",
-        position: { x: 520, y: 100 },
-        data: {
-          label: "No Reply Gate",
-          nodeType: "logic",
-          description: "Silent exit — no message sent to sender",
-          config: { action: "silent_exit" },
-          enabled: true,
-        },
-      },
-      {
-        id: "holding-reply-1",
-        type: "amanda-flow-node",
-        position: { x: 520, y: 220 },
-        data: {
-          label: "Holding Reply",
-          nodeType: "logic",
-          description: "Immediately sends a brief acknowledgement for slow-processing tiers before the agent runs",
-          config: { message: "On it, give me a moment." },
-          enabled: true,
-        },
-      },
-      {
-        id: "context-1",
-        type: "amanda-flow-node",
-        position: { x: 300, y: 480 },
-        data: {
-          label: "Load History",
-          nodeType: "context",
-          description: "Fetch recent conversation history from chat.db and inject into agent input",
-          config: { historyLimit: 15 },
-          enabled: true,
-        },
-      },
-      {
-        id: "tool-imessage-1",
-        type: "amanda-flow-node",
-        position: { x: 740, y: 100 },
-        data: {
-          label: "iMessage MCP",
-          nodeType: "tool",
-          description: "Required — send_message, read receipts, attachment access",
-          config: { required: true, enabled: true },
-          enabled: true,
-        },
-      },
-      {
-        id: "tool-context-1",
-        type: "amanda-flow-node",
-        position: { x: 740, y: 220 },
-        data: {
-          label: "Context MCP",
-          nodeType: "tool",
-          description: "Required — LanceDB vector memory (memory_store, memory_search)",
-          config: { required: true, enabled: true },
-          enabled: true,
-        },
-      },
-      {
-        id: "tool-temporal-1",
-        type: "amanda-flow-node",
-        position: { x: 740, y: 340 },
-        data: {
-          label: "Temporal MCP",
-          nodeType: "tool",
-          description: "Optional — schedule_reminder and job scheduling via Temporal",
-          config: { required: false, enabled: true },
-          enabled: true,
-        },
-      },
-      {
-        id: "tool-browser-1",
-        type: "amanda-flow-node",
-        position: { x: 740, y: 460 },
-        data: {
-          label: "Browser MCP",
-          nodeType: "tool",
-          description: "Optional — web browsing and page navigation",
-          config: { required: false, enabled: true },
-          enabled: true,
-        },
-      },
-      {
-        id: "agent-1",
-        type: "amanda-flow-node",
-        position: { x: 1020, y: 300 },
-        data: {
-          label: "Amanda Agent",
-          nodeType: "agent",
-          description: "OpenAI Agents SDK run — model and maxTurns determined by tier",
-          config: {
-            imageModel: "gpt-4o",
-            tierModels: {
-              banter:     { model: "gpt-5.4-nano", maxTurns: 8 },
-              question:   { model: "gpt-5.4",      maxTurns: 10 },
-              reasoning:  { model: "gpt-5.4",      maxTurns: 15 },
-              complex:    { model: "gpt-5.4-nano",  maxTurns: 15 },
-              correction: { model: "gpt-5.4-nano",  maxTurns: 15 },
-              image:      { model: "gpt-5.4-nano",  maxTurns: 15 },
-            },
-          },
-          enabled: true,
-        },
-      },
-      {
-        id: "output-1",
-        type: "amanda-flow-node",
-        position: { x: 1280, y: 300 },
-        data: { label: "Send Reply", nodeType: "output", description: "Deliver response via send_message, send_image, or send_file tool", enabled: true },
-      },
-    ],
-    edges: [
-      { id: "e1",  source: "trigger-1",       target: "classify-1",      type: "smoothstep" },
-      { id: "e2",  source: "classify-1",       target: "no-reply-gate-1", type: "smoothstep", label: "no_reply" },
-      { id: "e3",  source: "classify-1",       target: "holding-reply-1", type: "smoothstep", label: "slow tier" },
-      { id: "e4",  source: "classify-1",       target: "agent-1",         type: "smoothstep" },
-      { id: "e5",  source: "context-1",        target: "agent-1",         type: "smoothstep" },
-      { id: "e6",  source: "tool-imessage-1",  target: "agent-1",         type: "smoothstep" },
-      { id: "e7",  source: "tool-context-1",   target: "agent-1",         type: "smoothstep" },
-      { id: "e8",  source: "tool-temporal-1",  target: "agent-1",         type: "smoothstep" },
-      { id: "e9",  source: "tool-browser-1",   target: "agent-1",         type: "smoothstep" },
-      { id: "e10", source: "agent-1",          target: "output-1",        type: "smoothstep", animated: true },
-    ],
-  };
-
-  return {
-    graphs: [defaultGraph],
-    activeGraphId: defaultGraph.id,
-  };
+  return createDefaultFlowGraphDocument(nowIso());
 }
 
 function readFlowGraphDocument(): FlowGraphDocument {
@@ -185,7 +32,7 @@ function readFlowGraphDocument(): FlowGraphDocument {
     if (!parsed.graphs || !Array.isArray(parsed.graphs)) {
       return getDefaultFlowGraphDocument();
     }
-    return parsed;
+    return normalizeFlowGraphDocument(parsed);
   } catch {
     return getDefaultFlowGraphDocument();
   }
@@ -193,12 +40,25 @@ function readFlowGraphDocument(): FlowGraphDocument {
 
 async function writeFlowGraphDocument(document: FlowGraphDocument): Promise<void> {
   ensureStudioHome();
-  await writeFile(getFlowGraphsPath(), await formatJsonDocument(document), "utf-8");
+  await writeFile(getFlowGraphsPath(), await formatJsonDocument(normalizeFlowGraphDocument(document)), "utf-8");
 }
 
 export class FlowGraphStore {
+  getDocument(): FlowGraphDocument {
+    return readFlowGraphDocument();
+  }
+
   listGraphs(): FlowGraph[] {
     return readFlowGraphDocument().graphs;
+  }
+
+  getActiveGraphId(): string | null {
+    return readFlowGraphDocument().activeGraphId;
+  }
+
+  getActiveGraph(): FlowGraph | null {
+    const document = readFlowGraphDocument();
+    return document.graphs.find((graph) => graph.id === document.activeGraphId) ?? null;
   }
 
   getGraph(id: string): FlowGraph | null {
@@ -215,8 +75,8 @@ export class FlowGraphStore {
       description: input.description,
       createdAt: now,
       updatedAt: now,
-      nodes: [],
-      edges: [],
+      nodes: createDefaultFlowGraphNodes(),
+      edges: DEFAULT_FLOW_GRAPH_EDGES,
     };
     const next: FlowGraphDocument = {
       ...doc,
@@ -260,5 +120,19 @@ export class FlowGraphStore {
     };
     await writeFlowGraphDocument(next);
     return remaining;
+  }
+
+  async setActiveGraph(id: string): Promise<FlowGraphDocument> {
+    const document = readFlowGraphDocument();
+    if (!document.graphs.some((graph) => graph.id === id)) {
+      throw new Error(`Flow graph ${id} not found`);
+    }
+
+    const next: FlowGraphDocument = {
+      ...document,
+      activeGraphId: id,
+    };
+    await writeFlowGraphDocument(next);
+    return next;
   }
 }

@@ -17,12 +17,13 @@ import {
   type RenderEmit,
 } from "rete-react-plugin";
 import { createRoot } from "react-dom/client";
-import type { FlowGraphEdge, FlowGraphNode, FlowNodeData, FlowNodeType } from "../../src/studio/types";
+import type { FlowBlockKey, FlowGraphEdge, FlowGraphNode, FlowNodeData, FlowNodeType } from "../../src/studio/types";
 import { FlowNodeCard } from "./components/flow-node";
 import {
   FLOW_INPUT_HANDLE_ID,
   FLOW_OUTPUT_HANDLE_ID,
   createFlowEdge,
+  createFlowBlockNode,
   createFlowNode,
   normalizeFlowEdge,
   normalizeFlowEdges,
@@ -39,6 +40,8 @@ type AmandaOutputs = { [FLOW_OUTPUT_HANDLE_ID]: ClassicPreset.Socket };
 class AmandaFlowReteNode extends ClassicPreset.Node<AmandaInputs, AmandaOutputs> {
   readonly kind = "amanda-flow-node";
   nodeType: FlowNodeType;
+  blockKey?: FlowBlockKey;
+  schemaVersion?: number;
   description?: string;
   enabled: boolean;
   config: Record<string, unknown>;
@@ -51,6 +54,8 @@ class AmandaFlowReteNode extends ClassicPreset.Node<AmandaInputs, AmandaOutputs>
     super(normalized.data.label);
     this.id = normalized.id;
     this.nodeType = normalized.data.nodeType;
+    this.blockKey = normalized.data.blockKey;
+    this.schemaVersion = normalized.data.schemaVersion;
     this.description = normalized.data.description;
     this.enabled = normalized.data.enabled !== false;
     this.config = normalized.data.config ?? {};
@@ -67,6 +72,14 @@ class AmandaFlowReteNode extends ClassicPreset.Node<AmandaInputs, AmandaOutputs>
 
     if (typeof patch.description === "string") {
       this.description = patch.description;
+    }
+
+    if (typeof patch.blockKey === "string") {
+      this.blockKey = patch.blockKey;
+    }
+
+    if (typeof patch.schemaVersion === "number") {
+      this.schemaVersion = patch.schemaVersion;
     }
 
     if (typeof patch.enabled === "boolean") {
@@ -101,7 +114,8 @@ type AreaExtra = ReactArea2D<FlowSchemes>;
 interface FlowEditorController {
   destroy(): void;
   addNode(type: FlowNodeType, position?: { x: number; y: number }): Promise<void>;
-  addNodeAtClientPoint(type: FlowNodeType, point: { x: number; y: number }): Promise<void>;
+  addBlock(blockKey: FlowBlockKey, position?: { x: number; y: number }): Promise<void>;
+  addBlockAtClientPoint(blockKey: FlowBlockKey, point: { x: number; y: number }): Promise<void>;
   updateNode(nodeId: string, patch: Partial<FlowNodeData>): Promise<void>;
   selectNode(nodeId: string | null): Promise<void>;
   deleteSelectedNode(): Promise<void>;
@@ -111,7 +125,7 @@ interface FlowEditorController {
 }
 
 export interface FlowCanvasHandle {
-  addNode(type: FlowNodeType): Promise<void>;
+  addBlock(blockKey: FlowBlockKey): Promise<void>;
   updateNode(nodeId: string, patch: Partial<FlowNodeData>): Promise<void>;
   selectNode(nodeId: string | null): Promise<void>;
   deleteSelectedNode(): Promise<void>;
@@ -219,6 +233,16 @@ function getCanvasCenterPosition(container: HTMLElement, area: AreaPlugin<FlowSc
   });
 }
 
+function getCanvasCenterZoomArgs(container: HTMLElement, currentZoom: number, delta: number) {
+  const bounds = container.getBoundingClientRect();
+
+  return {
+    zoom: currentZoom * (1 + delta),
+    ox: -(bounds.width / 2) * delta,
+    oy: -(bounds.height / 2) * delta,
+  };
+}
+
 function serializeFlowGraph(
   editor: NodeEditor<FlowSchemes>,
   area: AreaPlugin<FlowSchemes, AreaExtra>
@@ -233,6 +257,8 @@ function serializeFlowGraph(
       data: {
         label: node.label,
         nodeType: node.nodeType,
+        blockKey: node.blockKey,
+        schemaVersion: node.schemaVersion,
         description: node.description,
         enabled: node.enabled,
         config: node.config,
@@ -283,7 +309,9 @@ async function createFlowEditor(
     Presets.classic.setup({
       customize: {
         node() {
-          return AmandaFlowNodeView;
+          return function AmandaFlowNodeRenderer(props) {
+            return <AmandaFlowNodeView {...props} />;
+          };
         },
         connection() {
           return AmandaFlowConnectionView;
@@ -455,6 +483,21 @@ async function createFlowEditor(
     await AreaExtensions.zoomAt(area, editor.getNodes(), { scale: 0.9 });
   }
 
+  const addBlock = async (blockKey: FlowBlockKey, position?: { x: number; y: number }) => {
+    muted = true;
+
+    const nextNode = createFlowBlockNode(blockKey, position ?? getCanvasCenterPosition(container, area));
+    const reteNode = new AmandaFlowReteNode(nextNode);
+
+    nodeById.set(reteNode.id, reteNode);
+    await editor.addNode(reteNode);
+    await area.translate(reteNode.id, nextNode.position);
+    await setSelectedNode(reteNode.id);
+
+    muted = false;
+    notifyGraphChange();
+  };
+
   return {
     async addNode(type, position) {
       muted = true;
@@ -470,9 +513,12 @@ async function createFlowEditor(
       muted = false;
       notifyGraphChange();
     },
-    async addNodeAtClientPoint(type, point) {
+    async addBlock(blockKey, position) {
+      await addBlock(blockKey, position);
+    },
+    async addBlockAtClientPoint(blockKey, point) {
       const position = getFlowPositionFromClientPoint(container, area, point);
-      await this.addNode(type, position);
+      await addBlock(blockKey, position);
     },
     async updateNode(nodeId, patch) {
       const node = editor.getNode(nodeId);
@@ -515,14 +561,12 @@ async function createFlowEditor(
       notifyGraphChange();
     },
     async zoomIn() {
-      const bounds = container.getBoundingClientRect();
-      const transform = area.area.transform;
-      await area.area.zoom(transform.k * 1.16, bounds.width / 2, bounds.height / 2, "dblclick");
+      const args = getCanvasCenterZoomArgs(container, area.area.transform.k, 0.16);
+      await area.area.zoom(args.zoom, args.ox, args.oy, "dblclick");
     },
     async zoomOut() {
-      const bounds = container.getBoundingClientRect();
-      const transform = area.area.transform;
-      await area.area.zoom(transform.k / 1.16, bounds.width / 2, bounds.height / 2, "dblclick");
+      const args = getCanvasCenterZoomArgs(container, area.area.transform.k, -0.16);
+      await area.area.zoom(args.zoom, args.ox, args.oy, "dblclick");
     },
     async fit() {
       if (!editor.getNodes().length) {
@@ -547,7 +591,10 @@ export const FlowReteCanvas = forwardRef<
     onSelectionChange: (nodeId: string | null) => void;
     onGraphChange: (nodes: FlowGraphNode[], edges: FlowGraphEdge[]) => void;
   }
->(function FlowReteCanvas({ nodes, edges, selectedNodeId, onSelectionChange, onGraphChange }, ref) {
+>(function FlowReteCanvas(
+  { nodes, edges, selectedNodeId, onSelectionChange, onGraphChange },
+  ref
+) {
   const latestCallbacksRef = useRef({ onSelectionChange, onGraphChange });
   const initialGraphRef = useRef({
     nodes: normalizeFlowNodes(nodes),
@@ -572,8 +619,8 @@ export const FlowReteCanvas = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
-      addNode(type) {
-        return editor?.addNode(type) ?? Promise.resolve();
+      addBlock(blockKey) {
+        return editor?.addBlock(blockKey) ?? Promise.resolve();
       },
       updateNode(nodeId, patch) {
         return editor?.updateNode(nodeId, patch) ?? Promise.resolve();
@@ -603,12 +650,12 @@ export const FlowReteCanvas = forwardRef<
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
-    const nodeType = event.dataTransfer.getData("application/amanda-flow-node") as FlowNodeType;
-    if (!nodeType || !editor) {
+    const blockKey = event.dataTransfer.getData("application/amanda-flow-block") as FlowBlockKey;
+    if (!blockKey || !editor) {
       return;
     }
 
-    void editor.addNodeAtClientPoint(nodeType, { x: event.clientX, y: event.clientY });
+    void editor.addBlockAtClientPoint(blockKey, { x: event.clientX, y: event.clientY });
   }
 
   function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
@@ -651,7 +698,7 @@ export const FlowReteCanvas = forwardRef<
 
         {!nodes.length ? (
           <div className="flow-canvas-empty">
-            <strong>Start with a trigger or an agent block</strong>
+            <strong>Start with a block template</strong>
             <p>Drag a block from the left palette or click one to place it on Amanda’s workflow canvas.</p>
           </div>
         ) : null}

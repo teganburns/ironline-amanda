@@ -1,10 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { FlowGraph, FlowGraphEdge, FlowGraphNode, FlowNodeData, FlowNodeType } from "../../../src/studio/types";
+import {
+  DEFAULT_FLOW_RUNTIME_CONFIG,
+  FLOW_TIER_OPTIONS,
+  getFlowBlockDefinition,
+} from "../../../src/studio/flow-blocks";
+import type {
+  AmandaTier,
+  FlowBlockDefinition,
+  FlowBlockFieldDefinition,
+  FlowGraph,
+  FlowGraphEdge,
+  FlowGraphNode,
+  FlowNodeData,
+} from "../../../src/studio/types";
 import { studioClient } from "../client";
 import { EmptyState, LoadingCopy, LiveTimestamp, StatusPill } from "../components/ui";
 import { flowNodeTypeColors } from "../components/flow-node";
 import {
-  FLOW_PALETTE_ITEMS,
+  FLOW_BLOCK_PALETTE_ITEMS,
   flowNodeTypeLabels,
   formatFlowConfigInput,
   normalizeFlowEdges,
@@ -14,6 +27,15 @@ import {
 import { FlowReteCanvas, type FlowCanvasHandle } from "../flow-rete";
 import { useAsyncData } from "../hooks/use-async-data";
 
+const RUNTIME_TIERS: Exclude<AmandaTier, "no_reply">[] = [
+  "banter",
+  "question",
+  "reasoning",
+  "complex",
+  "correction",
+  "image",
+];
+
 function getNodeData(node: FlowGraphNode | null): FlowNodeData | null {
   if (!node || !node.data || typeof node.data !== "object") {
     return null;
@@ -22,20 +44,101 @@ function getNodeData(node: FlowGraphNode | null): FlowNodeData | null {
   return node.data;
 }
 
+function getNodeConfig(nodeData: FlowNodeData | null): Record<string, unknown> {
+  if (!nodeData?.config || typeof nodeData.config !== "object" || Array.isArray(nodeData.config)) {
+    return {};
+  }
+
+  return nodeData.config;
+}
+
+function readStringConfig(config: Record<string, unknown>, key: string, fallback = "") {
+  const value = config[key];
+  return typeof value === "string" ? value : fallback;
+}
+
+function readNumberConfig(config: Record<string, unknown>, key: string, fallback: number) {
+  const value = config[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readBooleanConfig(config: Record<string, unknown>, key: string, fallback = false) {
+  const value = config[key];
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function readTierArrayConfig(config: Record<string, unknown>, key: string, fallback: AmandaTier[]) {
+  const value = config[key];
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const next = value.filter((item): item is AmandaTier => typeof item === "string");
+  return next.length ? next : fallback;
+}
+
+function readTierModelsConfig(config: Record<string, unknown>) {
+  const current = config.tierModels;
+  const fallback = DEFAULT_FLOW_RUNTIME_CONFIG.tierModels;
+
+  if (!current || typeof current !== "object" || Array.isArray(current)) {
+    return fallback;
+  }
+
+  const next = { ...fallback };
+
+  for (const tier of RUNTIME_TIERS) {
+    const value = (current as Record<string, unknown>)[tier];
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      continue;
+    }
+
+    next[tier] = {
+      model: readStringConfig(value as Record<string, unknown>, "model", fallback[tier].model),
+      maxTurns: readNumberConfig(value as Record<string, unknown>, "maxTurns", fallback[tier].maxTurns),
+    };
+  }
+
+  return next;
+}
+
+function GraphStatusNote({
+  editing,
+  active,
+}: {
+  editing: boolean;
+  active: boolean;
+}) {
+  return (
+    <div className="definition-card flow-graph-meta-card">
+      <div className="panel-row">
+        <strong>Editing</strong>
+        <span>{editing ? "Selected in Studio" : "Not selected"}</span>
+      </div>
+      <div className="panel-row">
+        <strong>Runtime</strong>
+        <span>{active ? "Used by Amanda" : "Inactive graph"}</span>
+      </div>
+    </div>
+  );
+}
+
 export function FlowPage() {
   const {
-    data: graphs,
+    data: flowDocument,
     loading: graphsLoading,
     error: graphsError,
     reload: reloadGraphs,
-  } = useAsyncData(() => studioClient.listFlowGraphs(), []);
+    setData: setFlowDocument,
+  } = useAsyncData(() => studioClient.getFlowGraphDocument(), []);
 
   const canvasRef = useRef<FlowCanvasHandle | null>(null);
 
+  const graphs = flowDocument?.graphs ?? [];
+  const activeGraphId = flowDocument?.activeGraphId ?? null;
+
   const [selectedGraphId, setSelectedGraphId] = useState<string | null>(null);
   const [graph, setGraph] = useState<FlowGraph | null>(null);
-  const [graphLoading, setGraphLoading] = useState(false);
-  const [graphError, setGraphError] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [draftDescription, setDraftDescription] = useState("");
   const [nodes, setNodes] = useState<FlowGraphNode[]>([]);
@@ -49,16 +152,28 @@ export function FlowPage() {
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [activating, setActivating] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [canvasRevision, setCanvasRevision] = useState(0);
 
   useEffect(() => {
-    if (!selectedGraphId && graphs?.length) {
-      setSelectedGraphId(graphs[0]!.id);
+    if (!graphs.length) {
+      setSelectedGraphId(null);
+      return;
     }
-  }, [graphs, selectedGraphId]);
+
+    if (!selectedGraphId || !graphs.some((item) => item.id === selectedGraphId)) {
+      setSelectedGraphId(activeGraphId ?? graphs[0]!.id);
+    }
+  }, [activeGraphId, graphs, selectedGraphId]);
+
+  const selectedGraph = useMemo(
+    () => graphs.find((item) => item.id === selectedGraphId) ?? null,
+    [graphs, selectedGraphId]
+  );
 
   function resetGraphDraft(source: FlowGraph) {
+    setGraph(source);
     setDraftName(source.name);
     setDraftDescription(source.description ?? "");
     setNodes(normalizeFlowNodes(source.nodes));
@@ -73,40 +188,13 @@ export function FlowPage() {
   }
 
   useEffect(() => {
-    if (!selectedGraphId) return;
-    const flowGraphId = selectedGraphId;
-
-    let cancelled = false;
-
-    async function loadGraph() {
-      try {
-        setGraphLoading(true);
-        setGraphError(null);
-        setGraph(null);
-        const next = await studioClient.getFlowGraph(flowGraphId);
-        if (!next || cancelled) {
-          return;
-        }
-
-        setGraph(next);
-        resetGraphDraft(next);
-      } catch (error: any) {
-        if (!cancelled) {
-          setGraphError(error?.message ?? "Unable to load the selected flow graph.");
-        }
-      } finally {
-        if (!cancelled) {
-          setGraphLoading(false);
-        }
-      }
+    if (!selectedGraph) {
+      setGraph(null);
+      return;
     }
 
-    void loadGraph();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedGraphId]);
+    resetGraphDraft(selectedGraph);
+  }, [selectedGraph]);
 
   useEffect(() => {
     if (!selectedNodeId) {
@@ -117,7 +205,7 @@ export function FlowPage() {
 
     const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
     const selectedNodeData = getNodeData(selectedNode);
-    setConfigInput(formatFlowConfigInput((selectedNodeData?.config as Record<string, unknown> | undefined) ?? {}));
+    setConfigInput(formatFlowConfigInput(getNodeConfig(selectedNodeData)));
     setConfigError(null);
   }, [nodes, selectedNodeId]);
 
@@ -134,23 +222,28 @@ export function FlowPage() {
     [nodes, selectedNodeId]
   );
   const selectedNodeData = getNodeData(selectedNode);
+  const selectedNodeConfig = getNodeConfig(selectedNodeData);
+  const selectedBlockDefinition = selectedNodeData?.blockKey
+    ? getFlowBlockDefinition(selectedNodeData.blockKey)
+    : null;
   const incomingEdgeCount = selectedNodeId ? edges.filter((edge) => edge.target === selectedNodeId).length : 0;
   const outgoingEdgeCount = selectedNodeId ? edges.filter((edge) => edge.source === selectedNodeId).length : 0;
-  const deleteBlocked = (graphs?.length ?? 0) <= 1;
-
+  const deleteBlocked = graphs.length <= 1;
   const graphCards = useMemo(
     () =>
-      (graphs ?? []).map((item) => ({
+      graphs.map((item) => ({
         ...item,
         displayName: item.id === graph?.id ? draftName || item.name : item.name,
         nodeCount: item.id === graph?.id ? nodes.length : item.nodes.length,
         edgeCount: item.id === graph?.id ? edges.length : item.edges.length,
         dirty: item.id === graph?.id ? isDirty : false,
+        active: item.id === activeGraphId,
       })),
-    [draftName, edges.length, graph?.id, graphs, isDirty, nodes.length]
+    [activeGraphId, draftName, edges.length, graph?.id, graphs, isDirty, nodes.length]
   );
 
   const saveDisabled = !graph || saving || Boolean(configError);
+  const canActivateSelectedGraph = Boolean(graph && graph.id !== activeGraphId && !isDirty && !saving);
 
   function handleCanvasGraphChange(nextNodes: FlowGraphNode[], nextEdges: FlowGraphEdge[]) {
     setNodes(normalizeFlowNodes(nextNodes));
@@ -159,9 +252,9 @@ export function FlowPage() {
     setActionError(null);
   }
 
-  function handleCreateNode(type: FlowNodeType) {
+  function handleCreateBlock(blockKey: (typeof FLOW_BLOCK_PALETTE_ITEMS)[number]["blockKey"]) {
     setActionError(null);
-    void canvasRef.current?.addNode(type);
+    void canvasRef.current?.addBlock(blockKey);
   }
 
   function discardChanges() {
@@ -173,13 +266,12 @@ export function FlowPage() {
     if (!graph) return;
 
     if (configError) {
-      setActionError("Fix the selected node config JSON before saving.");
+      setActionError("Fix the selected block JSON before saving.");
       return;
     }
 
     try {
       setSaving(true);
-      setGraphError(null);
       setActionError(null);
       const updated = await studioClient.updateFlowGraph(graph.id, {
         name: draftName.trim() || graph.name,
@@ -214,8 +306,8 @@ export function FlowPage() {
       setCreating(true);
       setCreateError(null);
       const created = await studioClient.createFlowGraph({ name: trimmedName });
-      reloadGraphs();
       setNewGraphName("");
+      reloadGraphs();
       setSelectedGraphId(created.id);
     } catch (error: any) {
       setCreateError(error?.message ?? "Unable to create a new flow graph.");
@@ -250,6 +342,26 @@ export function FlowPage() {
       setSelectedGraphId(remaining[0]?.id ?? null);
     } catch (error: any) {
       setActionError(error?.message ?? "Unable to delete this flow graph.");
+    }
+  }
+
+  async function activateSelectedGraph() {
+    if (!graph) return;
+
+    if (isDirty) {
+      setActionError("Save or discard this flow before making it Amanda's active runtime graph.");
+      return;
+    }
+
+    try {
+      setActivating(true);
+      setActionError(null);
+      const nextDocument = await studioClient.setActiveFlowGraph(graph.id);
+      setFlowDocument(nextDocument);
+    } catch (error: any) {
+      setActionError(error?.message ?? "Unable to activate this flow graph.");
+    } finally {
+      setActivating(false);
     }
   }
 
@@ -289,6 +401,15 @@ export function FlowPage() {
     void canvasRef.current?.updateNode(selectedNodeId, patch);
   }
 
+  function updateSelectedNodeConfig(patch: Record<string, unknown>) {
+    updateSelectedNode({
+      config: {
+        ...selectedNodeConfig,
+        ...patch,
+      },
+    });
+  }
+
   function handleConfigInputChange(value: string) {
     setConfigInput(value);
 
@@ -299,6 +420,246 @@ export function FlowPage() {
     } catch (error: any) {
       setConfigError(error?.message ?? "Config JSON must be a valid object.");
     }
+  }
+
+  function renderConfigField(field: FlowBlockFieldDefinition, definition: FlowBlockDefinition) {
+    switch (field.kind) {
+      case "string":
+        return (
+          <label key={field.key}>
+            {field.label}
+            <input
+              value={readStringConfig(selectedNodeConfig, field.key)}
+              onChange={(event) => updateSelectedNodeConfig({ [field.key]: event.target.value })}
+            />
+            {field.description ? <p className="meta">{field.description}</p> : null}
+          </label>
+        );
+      case "number":
+        return (
+          <label key={field.key}>
+            {field.label}
+            <input
+              min={field.min ?? 0}
+              type="number"
+              value={readNumberConfig(selectedNodeConfig, field.key, field.min ?? 0)}
+              onChange={(event) =>
+                updateSelectedNodeConfig({
+                  [field.key]: Math.max(
+                    field.min ?? 0,
+                    Number.parseInt(event.target.value || String(field.min ?? 0), 10) || field.min || 0
+                  ),
+                })
+              }
+            />
+            {field.description ? <p className="meta">{field.description}</p> : null}
+          </label>
+        );
+      case "boolean":
+        return (
+          <label className="flow-toggle-row" key={field.key}>
+            <input
+              checked={readBooleanConfig(selectedNodeConfig, field.key, false)}
+              onChange={(event) => updateSelectedNodeConfig({ [field.key]: event.target.checked })}
+              type="checkbox"
+            />
+            <span>{field.label}</span>
+            {field.description ? <span className="meta">{field.description}</span> : null}
+          </label>
+        );
+      case "multiselect": {
+        const selectedValues = new Set(
+          readTierArrayConfig(
+            selectedNodeConfig,
+            field.key,
+            DEFAULT_FLOW_RUNTIME_CONFIG.holdingReplyTiers
+          )
+        );
+        return (
+          <div className="definition-card flow-graph-meta-card" key={field.key}>
+            <strong>{field.label}</strong>
+            {field.description ? <p className="meta">{field.description}</p> : null}
+            {(field.options ?? FLOW_TIER_OPTIONS).map((option) => (
+              <label className="flow-toggle-row" key={option.value}>
+                <input
+                  checked={selectedValues.has(option.value as AmandaTier)}
+                  onChange={(event) => {
+                    const next = new Set(selectedValues);
+                    if (event.target.checked) {
+                      next.add(option.value as AmandaTier);
+                    } else {
+                      next.delete(option.value as AmandaTier);
+                    }
+                    updateSelectedNodeConfig({ [field.key]: [...next] });
+                  }}
+                  type="checkbox"
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        );
+      }
+      case "tier_models": {
+        const tierModels = readTierModelsConfig(selectedNodeConfig);
+        return (
+          <div className="definition-card flow-graph-meta-card" key={field.key}>
+            <strong>{field.label}</strong>
+            {field.description ? <p className="meta">{field.description}</p> : null}
+            <div className="flow-tier-model-table">
+              {RUNTIME_TIERS.map((tier) => (
+                <div className="flow-tier-model-row" key={tier}>
+                  <strong>{tier}</strong>
+                  <input
+                    value={tierModels[tier].model}
+                    onChange={(event) =>
+                      updateSelectedNodeConfig({
+                        tierModels: {
+                          ...tierModels,
+                          [tier]: {
+                            ...tierModels[tier],
+                            model: event.target.value,
+                          },
+                        },
+                      })
+                    }
+                    placeholder="model"
+                  />
+                  <input
+                    min={1}
+                    type="number"
+                    value={tierModels[tier].maxTurns}
+                    onChange={(event) =>
+                      updateSelectedNodeConfig({
+                        tierModels: {
+                          ...tierModels,
+                          [tier]: {
+                            ...tierModels[tier],
+                            maxTurns: Math.max(1, Number.parseInt(event.target.value || "1", 10) || 1),
+                          },
+                        },
+                      })
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+      default:
+        return (
+          <p className="meta" key={`${definition.blockKey}:${field.key}`}>
+            No typed renderer is available for this field yet.
+          </p>
+        );
+    }
+  }
+
+  function renderSelectedNodeInspector() {
+    if (!selectedNodeData || !selectedBlockDefinition) {
+      return null;
+    }
+
+    return (
+      <div className="flow-inspector-stack">
+        <div className="flow-pane-header">
+          <div>
+            <p className="eyebrow">Block inspector</p>
+            <h3>{selectedNodeData.label}</h3>
+          </div>
+          <StatusPill value={selectedNodeData.enabled === false ? "offline" : "ready"} />
+        </div>
+
+        <div className="flow-node-type-chip">
+          <span
+            className="flow-node-type-dot"
+            style={{ background: flowNodeTypeColors[selectedNodeData.nodeType] }}
+          />
+          <span>{selectedBlockDefinition.label}</span>
+        </div>
+
+        <label>
+          Block label
+          <input
+            value={selectedNodeData.label}
+            onChange={(event) => updateSelectedNode({ label: event.target.value })}
+          />
+        </label>
+
+        <label>
+          Description
+          <textarea
+            className="flow-inspector-textarea"
+            rows={4}
+            value={selectedNodeData.description ?? ""}
+            onChange={(event) => updateSelectedNode({ description: event.target.value })}
+          />
+        </label>
+
+        <label className="flow-toggle-row">
+          <input
+            checked={selectedNodeData.enabled !== false}
+            onChange={(event) => updateSelectedNode({ enabled: event.target.checked })}
+            type="checkbox"
+          />
+          <span>Enabled in this workflow</span>
+        </label>
+
+        <div className="meta-grid flow-inspector-stats">
+          <div className="stat-card">
+            <strong>{incomingEdgeCount}</strong>
+            <span>incoming</span>
+          </div>
+          <div className="stat-card">
+            <strong>{outgoingEdgeCount}</strong>
+            <span>outgoing</span>
+          </div>
+        </div>
+
+        <div className="flow-inspector-stack">
+          <div className="flow-pane-header">
+            <div>
+              <p className="eyebrow">Runtime config</p>
+              <h3>{selectedBlockDefinition.label}</h3>
+            </div>
+          </div>
+
+          {selectedBlockDefinition.inspectorFields?.length
+            ? selectedBlockDefinition.inspectorFields.map((field) =>
+                renderConfigField(field, selectedBlockDefinition)
+              )
+            : (
+                <p className="meta">
+                  No runtime settings yet. This block is represented in the flow, but Layer 1 does not compile any
+                  custom config from it yet.
+                </p>
+              )}
+        </div>
+
+        <details>
+          <summary>Advanced JSON</summary>
+          <label>
+            Config JSON
+            <textarea
+              className="json-input flow-config-input"
+              rows={10}
+              value={configInput}
+              onChange={(event) => handleConfigInputChange(event.target.value)}
+            />
+          </label>
+          {configError ? (
+            <p className="empty">Config issue: {configError}</p>
+          ) : (
+            <p className="meta">Unknown keys are preserved when saved and ignored unless a registered block schema uses them.</p>
+          )}
+        </details>
+
+        <button className="secondary-button" type="button" onClick={() => setSelectedNodeId(null)}>
+          Back to graph settings
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -327,10 +688,13 @@ export function FlowPage() {
             >
               <div className="flow-graph-card-top">
                 <strong>{item.displayName}</strong>
-                {item.dirty ? <span className="flow-card-dirty-dot" aria-hidden="true" /> : null}
+                <div>
+                  {item.active ? <span className="flow-node-state">Active</span> : null}
+                  {item.dirty ? <span className="flow-card-dirty-dot" aria-hidden="true" /> : null}
+                </div>
               </div>
               <div className="flow-graph-card-meta">
-                <span>{item.nodeCount} nodes</span>
+                <span>{item.nodeCount} blocks</span>
                 <span>{item.edgeCount} edges</span>
                 <LiveTimestamp value={item.updatedAt} />
               </div>
@@ -358,23 +722,23 @@ export function FlowPage() {
           <div className="flow-pane-header">
             <div>
               <p className="eyebrow">Palette</p>
-              <h3>Workflow blocks</h3>
+              <h3>Block templates</h3>
             </div>
           </div>
           <div className="flow-palette-grid">
-            {FLOW_PALETTE_ITEMS.map(({ type, label, description }) => (
+            {FLOW_BLOCK_PALETTE_ITEMS.map(({ blockKey, nodeType, label, description }) => (
               <button
-                key={type}
-                className={`flow-palette-item flow-palette-${type}`}
+                key={blockKey}
+                className={`flow-palette-item flow-palette-${nodeType}`}
                 draggable
-                onClick={() => handleCreateNode(type)}
+                onClick={() => handleCreateBlock(blockKey)}
                 onDragStart={(event) => {
-                  event.dataTransfer.setData("application/amanda-flow-node", type);
+                  event.dataTransfer.setData("application/amanda-flow-block", blockKey);
                   event.dataTransfer.effectAllowed = "move";
                 }}
                 type="button"
               >
-                <span className="flow-palette-swatch" style={{ background: flowNodeTypeColors[type] }} />
+                <span className="flow-palette-swatch" style={{ background: flowNodeTypeColors[nodeType] }} />
                 <div className="flow-palette-copy">
                   <strong>{label}</strong>
                   <small>{description}</small>
@@ -398,7 +762,9 @@ export function FlowPage() {
             <p className="flow-toolbar-meta">
               {selectedNodeData
                 ? `${flowNodeTypeLabels[selectedNodeData.nodeType]} selected • ${incomingEdgeCount} inbound • ${outgoingEdgeCount} outbound`
-                : `${nodes.length} nodes • ${edges.length} edges • Select a node to edit its properties`}
+                : activeGraphId === graph?.id
+                  ? "Editing Amanda's active runtime graph"
+                  : "Editing a non-active graph. Amanda will keep using the active graph until you activate this one."}
             </p>
           </div>
 
@@ -408,6 +774,9 @@ export function FlowPage() {
             </button>
             <button className="secondary-button" type="button" onClick={discardChanges} disabled={!isDirty || saving}>
               Discard changes
+            </button>
+            <button className="secondary-button" type="button" onClick={() => void activateSelectedGraph()} disabled={!canActivateSelectedGraph || activating}>
+              {activating ? "Activating..." : activeGraphId === graph?.id ? "Active at runtime" : "Make active"}
             </button>
             <button
               className={`secondary-button${confirmDelete ? " danger-button" : ""}`}
@@ -437,9 +806,9 @@ export function FlowPage() {
         ) : null}
 
         <div className="flow-shell-canvas">
-          {graphLoading ? <LoadingCopy message="Loading selected flow..." /> : null}
-          {graphError ? <p className="empty">Flow load issue: {graphError}</p> : null}
-          {!graphLoading && !graphError && !graph ? (
+          {graphsLoading ? <LoadingCopy message="Loading selected flow..." /> : null}
+          {graphsError ? <p className="empty">Flow load issue: {graphsError}</p> : null}
+          {!graphsLoading && !graphsError && !graph ? (
             <EmptyState message="Select a flow from the left sidebar to start editing." />
           ) : null}
           {graph ? (
@@ -457,84 +826,10 @@ export function FlowPage() {
       </section>
 
       <aside className="panel flow-inspector-panel">
-        {!graph && !graphLoading ? (
+        {!graph && !graphsLoading ? (
           <EmptyState message="Choose a flow to inspect it." />
         ) : selectedNodeData ? (
-          <div className="flow-inspector-stack">
-            <div className="flow-pane-header">
-              <div>
-                <p className="eyebrow">Node inspector</p>
-                <h3>{selectedNodeData.label}</h3>
-              </div>
-              <StatusPill value={selectedNodeData.enabled === false ? "offline" : "ready"} />
-            </div>
-
-            <div className="flow-node-type-chip">
-              <span
-                className="flow-node-type-dot"
-                style={{ background: flowNodeTypeColors[selectedNodeData.nodeType] }}
-              />
-              <span>{flowNodeTypeLabels[selectedNodeData.nodeType]}</span>
-            </div>
-
-            <label>
-              Node label
-              <input
-                value={selectedNodeData.label}
-                onChange={(event) => updateSelectedNode({ label: event.target.value })}
-              />
-            </label>
-
-            <label>
-              Description
-              <textarea
-                className="flow-inspector-textarea"
-                rows={4}
-                value={selectedNodeData.description ?? ""}
-                onChange={(event) => updateSelectedNode({ description: event.target.value })}
-              />
-            </label>
-
-            <label className="flow-toggle-row">
-              <input
-                checked={selectedNodeData.enabled !== false}
-                onChange={(event) => updateSelectedNode({ enabled: event.target.checked })}
-                type="checkbox"
-              />
-              <span>Enabled in this workflow</span>
-            </label>
-
-            <div className="meta-grid flow-inspector-stats">
-              <div className="stat-card">
-                <strong>{incomingEdgeCount}</strong>
-                <span>incoming</span>
-              </div>
-              <div className="stat-card">
-                <strong>{outgoingEdgeCount}</strong>
-                <span>outgoing</span>
-              </div>
-            </div>
-
-            <label>
-              Config JSON
-              <textarea
-                className="json-input flow-config-input"
-                rows={10}
-                value={configInput}
-                onChange={(event) => handleConfigInputChange(event.target.value)}
-              />
-            </label>
-
-            {configError ? (
-              <p className="empty">Config issue: {configError}</p>
-            ) : (
-              <p className="meta">Valid JSON object. These keys are stored on the node and saved with the graph.</p>
-            )}
-
-            <button className="secondary-button" type="button" onClick={() => setSelectedNodeId(null)}>
-              Back to graph settings
-            </button>
-          </div>
+          renderSelectedNodeInspector()
         ) : (
           <div className="flow-inspector-stack">
             <div className="flow-pane-header">
@@ -574,7 +869,7 @@ export function FlowPage() {
             <div className="stats-grid flow-inspector-stats">
               <div className="stat-card">
                 <strong>{nodes.length}</strong>
-                <span>nodes</span>
+                <span>blocks</span>
               </div>
               <div className="stat-card">
                 <strong>{edges.length}</strong>
@@ -585,6 +880,8 @@ export function FlowPage() {
                 <span>editor state</span>
               </div>
             </div>
+
+            <GraphStatusNote editing={Boolean(graph)} active={activeGraphId === graph?.id} />
 
             {graph ? (
               <div className="definition-card flow-graph-meta-card">
@@ -599,7 +896,12 @@ export function FlowPage() {
               </div>
             ) : null}
 
-            <p className="meta">Select any node on the canvas to edit its label, description, enabled state, and raw config.</p>
+            <p className="meta">
+              The selected graph is what you are editing. The active graph is what Amanda compiles and uses at runtime.
+            </p>
+            <p className="meta">
+              Select any block on the canvas to edit its label, enablement, typed runtime settings, and advanced JSON.
+            </p>
           </div>
         )}
       </aside>

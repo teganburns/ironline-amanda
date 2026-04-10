@@ -1,15 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildFlowConfigFromEntries,
   createFlowEdge,
   createFlowNode,
   FLOW_INPUT_HANDLE_ID,
   FLOW_OUTPUT_HANDLE_ID,
+  flowConfigToEntries,
+  formatFlowConfigEntryValue,
   formatFlowConfigInput,
   isValidFlowConnection,
   normalizeFlowEdge,
   normalizeFlowEdges,
   normalizeFlowNode,
   normalizeFlowNodes,
+  parseFlowConfigEntryValue,
   parseFlowConfigInput,
 } from "./flow-editor";
 
@@ -36,18 +40,58 @@ describe("flow editor helpers", () => {
     expect(() => parseFlowConfigInput("[]")).toThrow("Node config must be a JSON object.");
   });
 
+  test("formats and parses friendly config entry values", () => {
+    expect(formatFlowConfigEntryValue("amanda-core")).toBe("amanda-core");
+    expect(formatFlowConfigEntryValue(true)).toBe("true");
+    expect(formatFlowConfigEntryValue({ mode: "fast" })).toBe('{"mode":"fast"}');
+
+    expect(parseFlowConfigEntryValue("true")).toBe(true);
+    expect(parseFlowConfigEntryValue("42")).toBe(42);
+    expect(parseFlowConfigEntryValue('{"mode":"fast"}')).toEqual({ mode: "fast" });
+    expect(parseFlowConfigEntryValue("agentId")).toBe("agentId");
+  });
+
+  test("converts config objects to editable rows and back", () => {
+    const entries = flowConfigToEntries({
+      agentId: "amanda-core",
+      retries: 2,
+      autonomous: true,
+    });
+
+    expect(entries.map((entry) => ({ key: entry.key, value: entry.value }))).toEqual([
+      { key: "agentId", value: "amanda-core" },
+      { key: "retries", value: "2" },
+      { key: "autonomous", value: "true" },
+    ]);
+
+    expect(
+      buildFlowConfigFromEntries([
+        { id: "1", key: "agentId", value: "amanda-core" },
+        { id: "2", key: "retries", value: "2" },
+        { id: "3", key: "enabled", value: "true" },
+        { id: "4", key: "", value: "skip-me" },
+      ])
+    ).toEqual({
+      agentId: "amanda-core",
+      retries: 2,
+      enabled: true,
+    });
+  });
+
   test("normalizes nodes and preserves Amanda metadata", () => {
     const [node] = normalizeFlowNodes([
       {
         id: "node-1",
         type: "amanda-flow-node",
         position: { x: 20, y: 40 },
-        data: {
-          label: "Run Amanda",
-          nodeType: "agent",
-          description: "",
-          enabled: true,
-          config: { model: "gpt-5.4" },
+      data: {
+        label: "Run Amanda",
+        nodeType: "agent",
+        blockKey: "agent.amanda_run",
+        schemaVersion: 1,
+        description: "",
+        enabled: true,
+        config: { model: "gpt-5.4" },
         },
       },
     ]);
@@ -59,7 +103,9 @@ describe("flow editor helpers", () => {
       data: {
         label: "Run Amanda",
         nodeType: "agent",
-        description: "Run Amanda or another model-driven orchestration step.",
+        blockKey: "agent.amanda_run",
+        schemaVersion: 1,
+        description: "OpenAI Agents SDK run — model and maxTurns determined by tier",
         enabled: true,
         config: { model: "gpt-5.4" },
       },

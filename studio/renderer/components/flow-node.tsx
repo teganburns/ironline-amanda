@@ -9,6 +9,7 @@ export const flowNodeTypeColors: Record<FlowNodeType, string> = {
   agent: "#ee9dc5",
   tool: "#f4b69d",
   logic: "#fdd597",
+  action: "#86c1b7",
   output: "#5cb88f",
 };
 
@@ -75,6 +76,19 @@ export function FlowNodeIcon({ type }: { type: FlowNodeType }) {
       return (
         <svg {...common}>
           <path d="m22 2-7 20-4-9-9-4 20-7z" />
+        </svg>
+      );
+    case "action":
+      return (
+        <svg {...common}>
+          <path d="M12 3v6" />
+          <path d="M12 15v6" />
+          <path d="M5.64 5.64l4.24 4.24" />
+          <path d="m14.12 14.12 4.24 4.24" />
+          <path d="M3 12h6" />
+          <path d="M15 12h6" />
+          <path d="m5.64 18.36 4.24-4.24" />
+          <path d="m14.12 9.88 4.24-4.24" />
         </svg>
       );
   }

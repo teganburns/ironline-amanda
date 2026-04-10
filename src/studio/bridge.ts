@@ -1,6 +1,6 @@
 import type { BridgeInfo } from "./types";
 
-export const STUDIO_BRIDGE_VERSION = "2026-04-02-mcps";
+export const STUDIO_BRIDGE_VERSION = "2026-04-10-flow-runtime-config";
 
 export const STUDIO_BRIDGE_CAPABILITIES = [
   "getBridgeInfo",
@@ -39,6 +39,13 @@ export const STUDIO_BRIDGE_CAPABILITIES = [
   "listProcesses",
   "startProcess",
   "stopProcess",
+  "listFlowGraphs",
+  "getFlowGraphDocument",
+  "getFlowGraph",
+  "createFlowGraph",
+  "updateFlowGraph",
+  "deleteFlowGraph",
+  "setActiveFlowGraph",
 ] as const;
 
 export type StudioBridgeCapability = (typeof STUDIO_BRIDGE_CAPABILITIES)[number];
