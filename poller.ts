@@ -1,18 +1,15 @@
 /**
  * Amanda iMessage poller
  *
- * Watches ~/Library/Messages/ for changes, queries new unread messages,
- * deduplicates via seen GUIDs, and fires the agent for each new message.
+ * Polls BlueBubbles API for new messages every 5s, deduplicates via seen
+ * GUIDs, and fires the agent for each new inbound iMessage.
  *
  * Usage:
- *   AUTH_TOKEN=<token> bun poller.ts
+ *   BLUE_BUBBLES_KEY=<key> bun poller.ts
  */
 
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { loadProjectEnv } from "./src/env";
-import { getMessages } from "./src/db";
-import { lookupContact, markChatRead } from "./src/applescript";
+import { getMessages, lookupContact, markChatRead, type Message } from "./src/bluebubbles";
 import { loadSeen, markSeen } from "./src/seen";
 import type { MessagePayload, MessageType } from "./src/agent";
 import { IronlineStudioControl } from "./src/studio/control";
@@ -28,14 +25,9 @@ const studioControl = new IronlineStudioControl();
 
 // ── Message type resolution ───────────────────────────────────────────────────
 
-function resolveMessageType(msg: ReturnType<typeof getMessages>[number]): MessageType {
+function resolveMessageType(msg: Message): MessageType {
   if (msg.isReaction) return "reaction";
-  if (msg.attachments.length === 0) {
-    // U+FFFC (object replacement character) in text means an attachment was sent
-    // but hasn't been linked in chat.db yet — treat as image so the agent retries.
-    if (msg.text?.includes("\uFFFC")) return "image";
-    return "text";
-  }
+  if (msg.attachments.length === 0) return "text";
   const mime = msg.attachments[0].mimeType;
   if (mime.startsWith("image/")) return "image";
   if (mime.startsWith("video/")) return "video";
@@ -47,7 +39,7 @@ function resolveMessageType(msg: ReturnType<typeof getMessages>[number]): Messag
 
 async function processMessages(
   seen: Set<string>,
-  msgs: ReturnType<typeof getMessages>
+  msgs: Message[]
 ): Promise<void> {
   const unseen = msgs.filter((m) => !seen.has(m.guid) && !m.isFromMe && m.service === "iMessage");
   if (unseen.length === 0) return;
@@ -71,7 +63,7 @@ async function processMessages(
 
     console.log(`[poller] → agent: ${senderName ?? msg.sender}: ${msg.text ?? `[${payload.message_type}]`}`);
     try {
-      await markChatRead(msg.sender).catch(() => {}); // mark read before replying
+      await markChatRead(msg.chatId).catch(() => {}); // mark read before replying
       await studioControl.runAgent({
         trigger: "imessage",
         channel: "imessage",
@@ -99,10 +91,10 @@ async function main() {
 
   const seen = loadSeen();
 
-  // Seed seen with all messages from the last 24 hours — covers both read and
-  // unread so we don't reprocess anything that arrived before startup.
+  // Seed seen with all messages from the last 24 hours so we don't reprocess
+  // anything that arrived before startup.
   const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const existing = getMessages({ since: oneDayAgo, limit: 1000 });
+  const existing = await getMessages({ since: oneDayAgo, limit: 1000 });
   await markSeen(seen, existing.map((m) => m.guid));
   console.log(`[poller] seeded ${existing.length} message(s) from last 24h as seen`);
 
@@ -112,7 +104,7 @@ async function main() {
   const poll = async () => {
     try {
       const since = new Date(Date.now() - POLL_WINDOW_MS);
-      const msgs = getMessages({ since, limit: 100 });
+      const msgs = await getMessages({ since, limit: 100 });
       await processMessages(seen, msgs);
     } catch (e: any) {
       console.error(`[poller] error: ${e?.message ?? String(e)}`);

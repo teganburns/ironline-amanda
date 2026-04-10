@@ -18,7 +18,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { execSync } from "node:child_process";
-import { getMessages } from "./db.js";
+import { getMessages, downloadBBAttachment } from "./bluebubbles.js";
 import { loadProjectEnv } from "./env";
 import {
   getBrowserLocalMcpUrl,
@@ -257,20 +257,18 @@ export async function callAgent(
   });
 
   // history is DESC ordered — history[0] is the triggering message.
-  // For image messages, attachments may not be linked in chat.db immediately —
-  // retry once after a short delay.
-  let history = getMessages({ chatId: payload.chat_id, limit: config.historyLimit });
+  let history = await getMessages({ chatId: payload.chat_id, limit: config.historyLimit });
   if (payload.message_type === "image") {
-    // Retry up to 5x (max ~10s) waiting for chat.db to link the attachment.
+    // Retry up to 5x (max ~10s) waiting for BB to have the attachment linked.
     for (let attempt = 0; attempt < 5; attempt++) {
       if ((history[0]?.attachments.length ?? 0) > 0) break;
       const delay = (attempt + 1) * 2_000;
       console.log(`[agent] waiting ${delay / 1000}s for attachment to link (attempt ${attempt + 1})`);
       await new Promise((r) => setTimeout(r, delay));
-      history = getMessages({ chatId: payload.chat_id, limit: config.historyLimit });
+      history = await getMessages({ chatId: payload.chat_id, limit: config.historyLimit });
     }
     if ((history[0]?.attachments.length ?? 0) === 0) {
-      console.warn("[agent] attachment never linked in chat.db after retries");
+      console.warn("[agent] attachment never linked after retries");
     }
   }
 
@@ -448,10 +446,23 @@ export async function callAgent(
       }
 
       for (const att of imageAtts) {
-        const filePath = att.filename.replace(/^~/, homedir());
-        if (!existsSync(filePath)) {
-          console.log(`[agent] attachment not found: ${filePath}`);
-          continue;
+        let filePath: string;
+        let tempPath: string | null = null;
+
+        if (att.filename.startsWith("bb://")) {
+          try {
+            filePath = await downloadBBAttachment(att.filename, att.mimeType);
+            tempPath = filePath;
+          } catch (e: any) {
+            console.log(`[agent] failed to download BB attachment ${att.filename}: ${e?.message}`);
+            continue;
+          }
+        } else {
+          filePath = att.filename.replace(/^~/, homedir());
+          if (!existsSync(filePath)) {
+            console.log(`[agent] attachment not found: ${filePath}`);
+            continue;
+          }
         }
 
         try {
@@ -500,6 +511,8 @@ export async function callAgent(
           timeline.push(
             timelineEvent("tool", "image-processing.error", e?.message ?? "Image processing failed", String(e))
           );
+        } finally {
+          if (tempPath) rmSync(tempPath, { force: true });
         }
       }
     }
