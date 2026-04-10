@@ -4,6 +4,7 @@ import type { StudioSnapshot } from "../../src/studio/types";
 import { studioClient } from "./client";
 import { getBridgeDiagnostics } from "./bridge";
 import { AmandaMark } from "./components/amanda-mark";
+import { StudioErrorBoundary } from "./components/error-boundary";
 import { ShellLayout } from "./components/shell-layout";
 import { OverviewPage } from "./pages/overview-page";
 import { RunsPage } from "./pages/runs-page";
@@ -181,23 +182,25 @@ export function App() {
   };
 
   return (
-    <HashRouter>
-      <Routes>
-        <Route element={<ShellLayout shell={shellContext} />}>
-          <Route path="/" element={<OverviewPage />} />
-          <Route path="/runs" element={<RunsPage />} />
-          <Route path="/runs/:runId" element={<RunDetailPage />} />
-          <Route path="/jobs" element={<JobsPage />} />
-          <Route path="/jobs/:jobId" element={<JobDetailPage />} />
-          <Route path="/connectors" element={<ConnectorsPage />} />
-          <Route path="/mcps" element={<McpsPage />} />
-          <Route path="/agent" element={<AgentPage />} />
-          <Route path="/flow" element={<FlowPage />} />
-          <Route path="/browser" element={<BrowserPage />} />
-          <Route path="/observability" element={<ObservabilityPage />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </HashRouter>
+    <StudioErrorBoundary>
+      <HashRouter>
+        <Routes>
+          <Route element={<ShellLayout shell={shellContext} />}>
+            <Route path="/" element={<OverviewPage />} />
+            <Route path="/runs" element={<RunsPage />} />
+            <Route path="/runs/:runId" element={<RunDetailPage />} />
+            <Route path="/jobs" element={<JobsPage />} />
+            <Route path="/jobs/:jobId" element={<JobDetailPage />} />
+            <Route path="/connectors" element={<ConnectorsPage />} />
+            <Route path="/mcps" element={<McpsPage />} />
+            <Route path="/agent" element={<AgentPage />} />
+            <Route path="/flow" element={<FlowPage />} />
+            <Route path="/browser" element={<BrowserPage />} />
+            <Route path="/observability" element={<ObservabilityPage />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </HashRouter>
+    </StudioErrorBoundary>
   );
 }

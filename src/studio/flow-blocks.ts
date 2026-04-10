@@ -20,29 +20,38 @@ const RUNTIME_TIERS: Exclude<AmandaTier, "no_reply">[] = [
   "image",
 ];
 
+function readRuntimeDefault(name: string, fallback: string) {
+  const env =
+    typeof process !== "undefined" && process?.env && typeof process.env === "object"
+      ? process.env[name]
+      : undefined;
+
+  return typeof env === "string" && env.trim() ? env : fallback;
+}
+
 export const FLOW_TIER_OPTIONS = RUNTIME_TIERS.map((tier) => ({
   label: tier,
   value: tier,
 }));
 
 const TIER_MODEL_DEFAULTS: FlowRuntimeConfig["tierModels"] = {
-  banter: { model: process.env.TRIAGE_MODEL ?? "gpt-5.4-nano", maxTurns: 8 },
-  question: { model: process.env.STANDARD_MODEL ?? "gpt-5.4", maxTurns: 10 },
-  reasoning: { model: process.env.STANDARD_MODEL ?? "gpt-5.4", maxTurns: 15 },
-  complex: { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano", maxTurns: 15 },
-  correction: { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano", maxTurns: 15 },
-  image: { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano", maxTurns: 15 },
+  banter: { model: readRuntimeDefault("TRIAGE_MODEL", "gpt-5.4-nano"), maxTurns: 8 },
+  question: { model: readRuntimeDefault("STANDARD_MODEL", "gpt-5.4"), maxTurns: 10 },
+  reasoning: { model: readRuntimeDefault("STANDARD_MODEL", "gpt-5.4"), maxTurns: 15 },
+  complex: { model: readRuntimeDefault("REASONING_MODEL", "gpt-5.4-nano"), maxTurns: 15 },
+  correction: { model: readRuntimeDefault("REASONING_MODEL", "gpt-5.4-nano"), maxTurns: 15 },
+  image: { model: readRuntimeDefault("REASONING_MODEL", "gpt-5.4-nano"), maxTurns: 15 },
 };
 
 export const DEFAULT_FLOW_RUNTIME_CONFIG: Omit<FlowRuntimeConfig, "graphId" | "graphName"> = {
-  classifyModel: process.env.TRIAGE_MODEL ?? "gpt-5.4-nano",
+  classifyModel: readRuntimeDefault("TRIAGE_MODEL", "gpt-5.4-nano"),
   holdingReplyTiers: ["reasoning", "complex", "correction", "image"],
   holdingReply: {
     enabled: true,
     fallbackMessage: "On it, give me a moment.",
   },
   historyLimit: 15,
-  imageModel: process.env.IMAGE_MODEL ?? "gpt-4o",
+  imageModel: readRuntimeDefault("IMAGE_MODEL", "gpt-4o"),
   tierModels: TIER_MODEL_DEFAULTS,
   mcps: {
     imessage: { enabled: true, required: true },

@@ -123,6 +123,19 @@ function GraphStatusNote({
   );
 }
 
+function resolveBlockDefinition(nodeData: FlowNodeData | null): FlowBlockDefinition | null {
+  if (!nodeData?.blockKey) {
+    return null;
+  }
+
+  try {
+    return getFlowBlockDefinition(nodeData.blockKey);
+  } catch (error) {
+    console.error("[flow-page] invalid block definition", nodeData.blockKey, error);
+    return null;
+  }
+}
+
 export function FlowPage() {
   const {
     data: flowDocument,
@@ -223,9 +236,7 @@ export function FlowPage() {
   );
   const selectedNodeData = getNodeData(selectedNode);
   const selectedNodeConfig = getNodeConfig(selectedNodeData);
-  const selectedBlockDefinition = selectedNodeData?.blockKey
-    ? getFlowBlockDefinition(selectedNodeData.blockKey)
-    : null;
+  const selectedBlockDefinition = resolveBlockDefinition(selectedNodeData);
   const incomingEdgeCount = selectedNodeId ? edges.filter((edge) => edge.target === selectedNodeId).length : 0;
   const outgoingEdgeCount = selectedNodeId ? edges.filter((edge) => edge.source === selectedNodeId).length : 0;
   const deleteBlocked = graphs.length <= 1;
@@ -576,7 +587,7 @@ export function FlowPage() {
             className="flow-node-type-dot"
             style={{ background: flowNodeTypeColors[selectedNodeData.nodeType] }}
           />
-          <span>{selectedBlockDefinition.label}</span>
+          <span>{selectedBlockDefinition?.label ?? selectedNodeData.label}</span>
         </div>
 
         <label>
@@ -621,11 +632,11 @@ export function FlowPage() {
           <div className="flow-pane-header">
             <div>
               <p className="eyebrow">Runtime config</p>
-              <h3>{selectedBlockDefinition.label}</h3>
+              <h3>{selectedBlockDefinition?.label ?? "Block settings"}</h3>
             </div>
           </div>
 
-          {selectedBlockDefinition.inspectorFields?.length
+          {selectedBlockDefinition?.inspectorFields?.length
             ? selectedBlockDefinition.inspectorFields.map((field) =>
                 renderConfigField(field, selectedBlockDefinition)
               )
