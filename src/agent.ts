@@ -15,7 +15,7 @@
 import { Agent, run, MCPServerStreamableHttp, setDefaultOpenAIKey } from "@openai/agents";
 import Langfuse from "langfuse";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { getMessages } from "./db.js";
@@ -27,6 +27,7 @@ import {
   getTemporalLocalMcpUrl,
 } from "./mcp-endpoints";
 import { compilePublishedPromptGraph } from "./studio/prompt-graphs";
+import { FlowGraphStore } from "./studio/flow-graphs";
 import type { ArtifactRecord, RunPromptSource, RunRequest, RunResult, TimelineEvent, ToolEvent } from "./studio/types";
 
 loadProjectEnv();
@@ -36,10 +37,79 @@ const CONTEXT_MCP_URL = getLanceDbContextLocalMcpUrl();
 const TEMPORAL_MCP_URL = getTemporalLocalMcpUrl();
 const BROWSER_MCP_URL = getBrowserLocalMcpUrl();
 
-const TRIAGE_MODEL = "gpt-5.4-nano";
-const STANDARD_MODEL = process.env.STANDARD_MODEL ?? "gpt-5.4";
-const REASONING_MODEL = process.env.REASONING_MODEL ?? "gpt-5.4-nano";
-const IMAGE_MODEL = process.env.IMAGE_MODEL ?? "gpt-4o";
+interface FlowConfig {
+  classifyModel: string;
+  holdingReplyTiers: string[];
+  historyLimit: number;
+  imageModel: string;
+  tierModels: Record<string, { model: string; maxTurns: number }>;
+  mcps: {
+    imessage: { enabled: boolean };
+    context:  { enabled: boolean };
+    temporal: { enabled: boolean };
+    browser:  { enabled: boolean };
+  };
+}
+
+const DEFAULT_FLOW_CONFIG: FlowConfig = {
+  classifyModel: process.env.TRIAGE_MODEL ?? "gpt-5.4-nano",
+  holdingReplyTiers: ["reasoning", "complex", "correction", "image"],
+  historyLimit: 15,
+  imageModel: process.env.IMAGE_MODEL ?? "gpt-4o",
+  tierModels: {
+    banter:     { model: process.env.TRIAGE_MODEL    ?? "gpt-5.4-nano", maxTurns: 8 },
+    question:   { model: process.env.STANDARD_MODEL  ?? "gpt-5.4",      maxTurns: 10 },
+    reasoning:  { model: process.env.STANDARD_MODEL  ?? "gpt-5.4",      maxTurns: 15 },
+    complex:    { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano",  maxTurns: 15 },
+    correction: { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano",  maxTurns: 15 },
+    image:      { model: process.env.REASONING_MODEL ?? "gpt-5.4-nano",  maxTurns: 15 },
+  },
+  mcps: {
+    imessage: { enabled: true },
+    context:  { enabled: true },
+    temporal: { enabled: true },
+    browser:  { enabled: true },
+  },
+};
+
+function loadFlowConfig(): FlowConfig {
+  try {
+    const store = new FlowGraphStore();
+    const graphs = store.listGraphs();
+    const graph = graphs[0];
+    if (!graph) return DEFAULT_FLOW_CONFIG;
+
+    const findNode = (id: string) => graph.nodes.find((n) => n.id === id);
+    const classifyNode  = findNode("classify-1");
+    const contextNode   = findNode("context-1");
+    const agentNode     = findNode("agent-1");
+    const imessageNode  = findNode("tool-imessage-1");
+    const contextMcpNode = findNode("tool-context-1");
+    const temporalNode  = findNode("tool-temporal-1");
+    const browserNode   = findNode("tool-browser-1");
+
+    return {
+      classifyModel:
+        (classifyNode?.data.config?.model as string) ?? DEFAULT_FLOW_CONFIG.classifyModel,
+      holdingReplyTiers:
+        (classifyNode?.data.config?.holdingReplyTiers as string[]) ?? DEFAULT_FLOW_CONFIG.holdingReplyTiers,
+      historyLimit:
+        (contextNode?.data.config?.historyLimit as number) ?? DEFAULT_FLOW_CONFIG.historyLimit,
+      imageModel:
+        (agentNode?.data.config?.imageModel as string) ?? DEFAULT_FLOW_CONFIG.imageModel,
+      tierModels:
+        (agentNode?.data.config?.tierModels as FlowConfig["tierModels"]) ?? DEFAULT_FLOW_CONFIG.tierModels,
+      mcps: {
+        imessage: { enabled: (imessageNode?.data.config?.enabled as boolean) ?? true },
+        context:  { enabled: (contextMcpNode?.data.config?.enabled as boolean) ?? true },
+        temporal: { enabled: (temporalNode?.data.config?.enabled as boolean) ?? true },
+        browser:  { enabled: (browserNode?.data.config?.enabled as boolean) ?? true },
+      },
+    };
+  } catch {
+    return DEFAULT_FLOW_CONFIG;
+  }
+}
 
 let langfuseClient: Langfuse | null = null;
 
@@ -138,6 +208,7 @@ export async function callAgent(
   request: Partial<RunRequest> = {},
   promptExecutionOptions: PromptExecutionOptions = {}
 ): Promise<RunResult> {
+  const config = loadFlowConfig();
   const AUTH_TOKEN = getAuthToken();
   const OPENAI_API_KEY = getOpenAIKey();
   setDefaultOpenAIKey(OPENAI_API_KEY);
@@ -188,7 +259,7 @@ export async function callAgent(
   // history is DESC ordered — history[0] is the triggering message.
   // For image messages, attachments may not be linked in chat.db immediately —
   // retry once after a short delay.
-  let history = getMessages({ chatId: payload.chat_id, limit: 15 });
+  let history = getMessages({ chatId: payload.chat_id, limit: config.historyLimit });
   if (payload.message_type === "image") {
     // Retry up to 5x (max ~10s) waiting for chat.db to link the attachment.
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -196,7 +267,7 @@ export async function callAgent(
       const delay = (attempt + 1) * 2_000;
       console.log(`[agent] waiting ${delay / 1000}s for attachment to link (attempt ${attempt + 1})`);
       await new Promise((r) => setTimeout(r, delay));
-      history = getMessages({ chatId: payload.chat_id, limit: 15 });
+      history = getMessages({ chatId: payload.chat_id, limit: config.historyLimit });
     }
     if ((history[0]?.attachments.length ?? 0) === 0) {
       console.warn("[agent] attachment never linked in chat.db after retries");
@@ -240,40 +311,48 @@ export async function callAgent(
     timeline.push(
       timelineEvent("connector", "mcp.connected", "Connected iMessage and context MCP servers")
     );
-    try {
-      await temporalMcpServer.connect();
-      activeMcpServers.push(temporalMcpServer);
-      timeline.push(
-        timelineEvent("connector", "mcp.connected", "Connected Temporal MCP server")
-      );
-    } catch (temporalError) {
-      timeline.push(
-        timelineEvent(
-          "connector",
-          "mcp.degraded",
-          "Temporal MCP was unavailable, so reminder scheduling tools are currently offline.",
-          temporalError instanceof Error ? temporalError.message : String(temporalError)
-        )
-      );
+    if (config.mcps.temporal.enabled) {
+      try {
+        await temporalMcpServer.connect();
+        activeMcpServers.push(temporalMcpServer);
+        timeline.push(
+          timelineEvent("connector", "mcp.connected", "Connected Temporal MCP server")
+        );
+      } catch (temporalError) {
+        timeline.push(
+          timelineEvent(
+            "connector",
+            "mcp.degraded",
+            "Temporal MCP was unavailable, so reminder scheduling tools are currently offline.",
+            temporalError instanceof Error ? temporalError.message : String(temporalError)
+          )
+        );
+      }
+    } else {
+      timeline.push(timelineEvent("connector", "mcp.skipped", "Temporal MCP disabled in flow config"));
     }
-    try {
-      await browserMcpServer.connect();
-      activeMcpServers.push(browserMcpServer);
-      timeline.push(
-        timelineEvent("connector", "mcp.connected", "Connected Browser MCP server")
-      );
-    } catch (browserError) {
-      timeline.push(
-        timelineEvent(
-          "connector",
-          "mcp.degraded",
-          "Browser MCP was unavailable, so browser navigation tools are currently offline.",
-          browserError instanceof Error ? browserError.message : String(browserError)
-        )
-      );
+    if (config.mcps.browser.enabled) {
+      try {
+        await browserMcpServer.connect();
+        activeMcpServers.push(browserMcpServer);
+        timeline.push(
+          timelineEvent("connector", "mcp.connected", "Connected Browser MCP server")
+        );
+      } catch (browserError) {
+        timeline.push(
+          timelineEvent(
+            "connector",
+            "mcp.degraded",
+            "Browser MCP was unavailable, so browser navigation tools are currently offline.",
+            browserError instanceof Error ? browserError.message : String(browserError)
+          )
+        );
+      }
+    } else {
+      timeline.push(timelineEvent("connector", "mcp.skipped", "Browser MCP disabled in flow config"));
     }
     // ── Triage ────────────────────────────────────────────────────────────────
-    const classification = await classifyMessage(payload, history, trace);
+    const classification = await classifyMessage(payload, history, trace, config.classifyModel);
     console.log(`[agent] tier: ${classification.tier}`);
     trace.update({ metadata: { chat_id: payload.chat_id, sender_name: payload.sender_name, tier: classification.tier } });
     timeline.push(
@@ -303,7 +382,7 @@ export async function callAgent(
     }
 
     // Send holding reply immediately for slow tiers before heavy processing
-    if (classification.holding_reply) {
+    if (classification.holding_reply && config.holdingReplyTiers.includes(classification.tier)) {
       const holdSpan = trace.span({ name: "holding-reply", input: { text: classification.holding_reply } });
       toolEvents.push({
         name: "send_message",
@@ -376,7 +455,7 @@ export async function callAgent(
         }
 
         try {
-          const description = await describeImage(filePath, att.mimeType, trace);
+          const description = await describeImage(filePath, att.mimeType, trace, config.imageModel);
           imageDescriptions.push(description);
           console.log(`[agent] described image: ${att.filename}`);
           artifacts.push({
@@ -427,7 +506,7 @@ export async function callAgent(
 
     // ── Run agent ─────────────────────────────────────────────────────────────
     const text = formatInput(payload, history, imageDescriptions);
-    const { model, maxTurns } = getModelConfig(classification.tier);
+    const { model, maxTurns } = config.tierModels[classification.tier] ?? { model: "gpt-5.4-nano", maxTurns: 8 };
     console.log(`[agent] model: ${model}, maxTurns: ${maxTurns}`);
     artifacts.push({
       kind: "prompt",
@@ -571,7 +650,8 @@ Holding reply guidelines: short, conversational, context-aware. Examples: "Got i
 async function classifyMessage(
   payload: MessagePayload,
   history: ReturnType<typeof getMessages>,
-  trace: ReturnType<Langfuse["trace"]>
+  trace: ReturnType<Langfuse["trace"]>,
+  classifyModel: string
 ): Promise<ClassificationResult> {
   const OPENAI_API_KEY = getOpenAIKey();
   // Images are always routed to the image pipeline — no need to ask nano.
@@ -610,7 +690,7 @@ async function classifyMessage(
 
     const gen = trace.generation({
       name:  "triage",
-      model: TRIAGE_MODEL,
+      model: classifyModel,
       input: triageMessages,
       metadata: { message_type: payload.message_type },
     });
@@ -622,7 +702,7 @@ async function classifyMessage(
         Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: TRIAGE_MODEL,
+        model: classifyModel,
         messages: triageMessages,
         max_tokens: 100,
         temperature: 0,
@@ -665,28 +745,17 @@ async function classifyMessage(
   }
 }
 
-function getModelConfig(tier: MessageTier): { model: string; maxTurns: number } {
-  switch (tier) {
-    case "banter":     return { model: TRIAGE_MODEL,    maxTurns: 8 };
-    case "question":   return { model: STANDARD_MODEL,  maxTurns: 10 };
-    case "reasoning":  return { model: STANDARD_MODEL,  maxTurns: 15 };
-    case "complex":
-    case "correction":
-    case "image":      return { model: REASONING_MODEL, maxTurns: 15 };
-    default:           return { model: TRIAGE_MODEL,    maxTurns: 8  };
-  }
-}
-
 // ── Image description ─────────────────────────────────────────────────────────
 
 /**
- * Describe an image using IMAGE_MODEL (gpt-5.4-pro).
+ * Describe an image using the imageModel from flow config (default: gpt-4o).
  * Converts HEIC/HEIF to JPEG first since OpenAI doesn't accept them.
  */
 async function describeImage(
   filePath: string,
   mimeType: string,
-  trace: ReturnType<Langfuse["trace"]>
+  trace: ReturnType<Langfuse["trace"]>,
+  imageModel: string
 ): Promise<string> {
   const OPENAI_API_KEY = getOpenAIKey();
   let readPath = filePath;
@@ -695,7 +764,7 @@ async function describeImage(
 
   const gen = trace.generation({
     name:  "image-description",
-    model: IMAGE_MODEL,
+    model: imageModel,
     input: { filePath, mimeType },
     metadata: { converted: mimeType === "image/heic" || mimeType === "image/heif" },
   });
@@ -721,7 +790,7 @@ async function describeImage(
         Authorization: `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: IMAGE_MODEL,
+        model: imageModel,
         messages: [
           {
             role: "user",

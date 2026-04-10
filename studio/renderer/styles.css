@@ -2348,6 +2348,10 @@ label {
   background: rgba(255, 255, 255, 0.66);
 }
 
+.flow-sidebar-panel {
+  overflow: hidden;
+}
+
 .flow-shell-panel {
   padding: 0;
   overflow: hidden;
@@ -2364,8 +2368,9 @@ label {
 }
 
 .flow-graph-list {
-  flex: 1 1 auto;
+  flex: 0 0 auto;
   min-height: 0;
+  max-height: min(32vh, 320px);
   overflow: auto;
   padding-right: 0.08rem;
 }
@@ -2455,12 +2460,22 @@ label {
   margin-top: 0;
   padding-top: 0;
   border-top: none;
-  flex-shrink: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .flow-palette-grid {
+  display: grid;
   grid-template-columns: 1fr;
   gap: 0.55rem;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 0.08rem;
+  align-content: start;
 }
 
 .flow-palette-item {
@@ -2941,20 +2956,10 @@ label {
   right: 0;
 }
 
+/* The RefSocket container IS the interactive element Rete uses for drag-to-connect.
+   Style it directly as the visible dot and suppress Rete's internal 24px circle. */
 .flow-port-socket-anchor {
-  display: flex;
-  pointer-events: auto;
-}
-
-.flow-port-anchor-in .flow-port-socket-anchor {
-  transform: translateX(-50%);
-}
-
-.flow-port-anchor-out .flow-port-socket-anchor {
-  transform: translateX(50%);
-}
-
-.flow-port {
+  display: block;
   width: 13px;
   height: 13px;
   border-radius: 999px;
@@ -2964,14 +2969,37 @@ label {
     0 0 0 1px rgba(170, 156, 209, 0.22),
     0 0 0 6px rgba(165, 149, 214, 0.08);
   cursor: crosshair;
-  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+  pointer-events: auto;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
-.flow-port:hover {
+/* Hide Rete.js's own rendered socket circle inside our container */
+.flow-port-socket-anchor > * {
+  display: none !important;
+}
+
+.flow-port-socket-anchor:hover {
   transform: scale(1.08);
   box-shadow:
     0 0 0 1px rgba(130, 183, 255, 0.3),
     0 0 0 7px rgba(113, 183, 245, 0.12);
+}
+
+/* Push dots fully outside the node border */
+.flow-port-anchor-in .flow-port-socket-anchor {
+  transform: translateX(-100%);
+}
+
+.flow-port-anchor-in .flow-port-socket-anchor:hover {
+  transform: translateX(-100%) scale(1.08);
+}
+
+.flow-port-anchor-out .flow-port-socket-anchor {
+  transform: translateX(0);
+}
+
+.flow-port-anchor-out .flow-port-socket-anchor:hover {
+  transform: translateX(0) scale(1.08);
 }
 
 .flow-connection-svg {
@@ -2990,7 +3018,6 @@ label {
   stroke-linecap: round;
   filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.82));
 }
-
 
 @media (max-width: 1360px) {
   .flow-editor-page {
